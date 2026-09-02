@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build outputs
+dist/
+**/dist/
+
+# Environment files and secrets
+.env
+.env.*
+*.env
+*.env.local
+
+# Databases and runtime data
+*.sqlite
+*.db
+

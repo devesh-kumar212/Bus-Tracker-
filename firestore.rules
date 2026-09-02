@@ -1,0 +1,66 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        request.auth.token.admin == true ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'
+      );
+    }
+
+    // Driver Profile Document Rules (drivers/{uid})
+    match /drivers/{driverId} {
+      // Driver Registration: Authenticated driver can create their document with status == 'pending'
+      allow create: if isAuthenticated() 
+                    && request.auth.uid == driverId
+                    && request.resource.data.status == 'pending'
+                    && request.resource.data.uid == driverId;
+
+      // Driver Profile Read: Driver can read own profile to check pending/approved/rejected status; Admins can read all profiles
+      allow read: if isAuthenticated() && (request.auth.uid == driverId || isAdmin());
+
+      // Driver Profile Update: Admins can update any field (e.g. status: 'approved' | 'rejected'); Approved drivers can update location/metadata but CANNOT modify status or approval timestamps
+      allow update: if isAuthenticated() && (
+        isAdmin() ||
+        (
+          request.auth.uid == driverId &&
+          resource.data.status == 'approved' &&
+          request.resource.data.status == 'approved'
+        )
+      );
+
+      // Delete driver: Admins only
+      allow delete: if isAdmin();
+    }
+
+    // Protected Driver Data (e.g. protected trips, sensitive telemetry)
+    match /protected_driver_data/{docId} {
+      allow read, write: if isAuthenticated() && (
+        isAdmin() ||
+        (
+          get(/databases/$(database)/documents/drivers/$(request.auth.uid)).data.status == 'approved'
+        )
+      );
+    }
+
+    // Admins Collection & fallback
+    match /admins/{adminId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /{document=**} {
+      allow read, write: if isAdmin();
+    }
+  }
+}
