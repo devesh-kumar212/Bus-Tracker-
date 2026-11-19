@@ -95,38 +95,19 @@ router.post('/start-trip', async (req, res) => {
       return res.status(400).json({ error: 'You already have an active trip running.' });
     }
 
-    // Get starting stop coordinates to seed the initial bus location
-    const firstStop = await db.get(`
-      SELECT s.latitude, s.longitude 
-      FROM stops s
-      JOIN route_stops rs ON s.id = rs.stop_id
-      WHERE rs.route_id = ?
-      ORDER BY rs.stop_order ASC
-      LIMIT 1
-    `, [route_id]);
-
-    const initLat = firstStop ? firstStop.latitude : 26.4601; // fallback to Ajmer station
-    const initLng = firstStop ? firstStop.longitude : 74.6441;
-
     // Start a transaction
     await db.run('BEGIN TRANSACTION');
 
     // Create the trip record
     const result = await db.run(`
       INSERT INTO trips (bus_id, driver_id, route_id, status, start_time, current_latitude, current_longitude, last_update)
-      VALUES (?, ?, ?, 'active', datetime('now', 'localtime'), ?, ?, datetime('now', 'localtime'))
-    `, [bus_id, req.user.id, route_id, initLat, initLng]);
+      VALUES (?, ?, ?, 'active', datetime('now', 'localtime'), NULL, NULL, NULL)
+    `, [bus_id, req.user.id, route_id]);
 
     const tripId = result.lastID;
 
     // Update bus status to active
     await db.run('UPDATE buses SET status = "active" WHERE id = ?', [bus_id]);
-
-    // Insert first log entry
-    await db.run(`
-      INSERT INTO trip_logs (trip_id, latitude, longitude)
-      VALUES (?, ?, ?)
-    `, [tripId, initLat, initLng]);
 
     await db.run('COMMIT');
 

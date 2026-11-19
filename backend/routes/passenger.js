@@ -29,9 +29,17 @@ router.get('/routes', async (req, res) => {
     const routesWithPolylines = [];
     for (let r of routes) {
       const polyline = await getOrGenerateRoutePolyline(r.id, db);
+      const stops = await db.all(`
+        SELECT s.id, s.stop_name AS name, s.latitude, s.longitude, rs.stop_order
+        FROM stops s
+        JOIN route_stops rs ON s.id = rs.stop_id
+        WHERE rs.route_id = ?
+        ORDER BY rs.stop_order ASC
+      `, [r.id]);
       routesWithPolylines.push({
         ...r,
-        polyline
+        polyline,
+        stops
       });
     }
     res.json(routesWithPolylines);
@@ -64,10 +72,11 @@ router.get('/active-trips', async (req, res) => {
     const db = await getDb();
     const activeTrips = await db.all(`
       SELECT t.id as trip_id, t.current_latitude, t.current_longitude, t.last_update,
-             b.bus_number, r.id as route_id, r.route_name
+             b.bus_number, r.id as route_id, r.route_name, u.name as driver_name
       FROM trips t
       JOIN buses b ON t.bus_id = b.id
       JOIN routes r ON t.route_id = r.id
+      JOIN users u ON t.driver_id = u.id
       WHERE t.status = 'active'
     `);
     res.json(activeTrips);

@@ -3,40 +3,6 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { Globe, Locate } from 'lucide-react';
 
-const CUSTOM_ROUTE_GEOMETRY = [
-  [26.4696, 74.6447], // Ajmer Bus Stand
-  [26.4660, 74.6439],
-  [26.4601, 74.6433],
-  [26.4520, 74.6401],
-  [26.4450, 74.6405],
-  [26.4428, 74.6420], // South-west curve
-  [26.4418, 74.6480],
-  [26.4421, 74.6540],
-  [26.4440, 74.6590],
-  [26.4490, 74.6640],
-  [26.4523, 74.6710], // Gandhinagar Jain Mandir
-  [26.4525, 74.6780],
-  [26.4522, 74.6850], // Crossing the mountain valley
-  [26.4520, 74.6920],
-  [26.4518, 74.6980],
-  [26.4530, 74.7040],
-  [26.4536, 74.7083], // GECA
-  [26.4525, 74.7200],
-  [26.4510, 74.7300],
-  [26.4480, 74.7400],
-  [26.4450, 74.7500],
-  [26.4420, 74.7600],
-  [26.4380, 74.7700],
-  [26.4346, 74.7810]  // Srinagar
-];
-
-const getRouteGeometry = (stops) => {
-  if (stops.length > 0 && stops.some(s => s.stop_name.includes('Srinagar') || s.stop_name.includes('GECA'))) {
-    return CUSTOM_ROUTE_GEOMETRY;
-  }
-  return stops.map(s => [s.latitude, s.longitude]);
-};
-
 export default function MapContainer({
   stops = [],
   buses = [],
@@ -192,7 +158,7 @@ export default function MapContainer({
     // Draw custom route polyline if supplied
     if (routePolyline && routePolyline.length > 1) {
       const polyline = L.polyline(routePolyline, {
-        color: '#22c55e', // Emerald Green for live route path
+        color: '#06b6d4', // Neon Cyan for live route path
         weight: 6,
         opacity: 0.9,
         lineJoin: 'round',
@@ -204,7 +170,7 @@ export default function MapContainer({
       const startPoint = routePolyline[0];
       const startIcon = L.divIcon({
         className: 'custom-start-marker',
-        html: `<div class="w-5 h-5 bg-emerald-500 border-2 border-white rounded-full flex items-center justify-center text-[10px] text-white font-black shadow-lg">S</div>`,
+        html: `<div class="w-5 h-5 bg-indigo-600 border-2 border-white rounded-full flex items-center justify-center text-[10px] text-white font-black shadow-lg">S</div>`,
         iconSize: [20, 20],
         iconAnchor: [10, 10]
       });
@@ -226,24 +192,7 @@ export default function MapContainer({
       const bounds = L.latLngBounds(routePolyline);
       map.fitBounds(bounds, { padding: [50, 50] });
     }
-    // Draw route polyline if stops are ordered
-    else if (activeRouteStops.length > 1) {
-      const latlngs = getRouteGeometry(activeRouteStops);
-      
-      // Draw road-aligned polyline connecting the stops directly along roads
-      const polyline = L.polyline(latlngs, {
-        color: '#6366f1', // Indigo-500
-        weight: 5,
-        opacity: 0.9,
-        lineJoin: 'round',
-      }).addTo(map);
-
-      markersRef.current.polyline = polyline;
-
-      // Fit bounds to show the entire route
-      const bounds = L.latLngBounds(latlngs);
-      map.fitBounds(bounds, { padding: [50, 50] });
-    } else if (stopsToRender.length > 0) {
+    else if (stopsToRender.length > 0) {
       // Fit to all stops if no specific route is active
       const latlngs = stopsToRender.map(s => [s.latitude, s.longitude]);
       const bounds = L.latLngBounds(latlngs);

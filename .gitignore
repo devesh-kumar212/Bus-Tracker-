@@ -15,4 +15,5 @@ dist/
 # Databases and runtime data
 *.sqlite
 *.db
+/backend/runtime-logs/
 

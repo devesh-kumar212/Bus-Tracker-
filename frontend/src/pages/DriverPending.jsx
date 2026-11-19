@@ -13,22 +13,10 @@ export default function DriverPending() {
   const [lastChecked, setLastChecked] = useState(new Date().toLocaleTimeString());
 
   useEffect(() => {
-    if (!user) {
-      navigate('/driver-login');
-      return;
-    }
-
-    // Initial profile fetch
+    if (!user) { navigate('/driver-login'); return; }
     fetchStatus();
-
-    // Poll status every 2 seconds for real-time status updates
-    const interval = setInterval(() => {
-      fetchStatusSilently();
-    }, 2000);
-
-    return () => {
-      clearInterval(interval);
-    };
+    const interval = setInterval(() => { fetchStatusSilently(); }, 2000);
+    return () => clearInterval(interval);
   }, [user]);
 
   const fetchStatusSilently = async () => {
@@ -38,104 +26,84 @@ export default function DriverPending() {
       if (details) {
         setProfile(details);
         if (details.approvalStatus === 'approved') {
-          // Update local session
-          const updatedUser = { ...user, status: 'approved', approvalStatus: 'approved' };
-          localStorage.setItem('tmb_user', JSON.stringify(updatedUser));
+          const u = { ...user, status: 'approved', approvalStatus: 'approved' };
+          localStorage.setItem('tmb_user', JSON.stringify(u));
           navigate('/driver/dashboard');
         } else if (details.approvalStatus === 'rejected') {
-          const updatedUser = { ...user, status: 'rejected', approvalStatus: 'rejected' };
-          localStorage.setItem('tmb_user', JSON.stringify(updatedUser));
+          const u = { ...user, status: 'rejected', approvalStatus: 'rejected' };
+          localStorage.setItem('tmb_user', JSON.stringify(u));
           navigate('/driver/rejected');
         }
       }
-    } catch (err) {
-      // silent retry
-    }
+    } catch (_) {}
   };
 
   const fetchStatus = async () => {
     if (!user) return;
     setChecking(true);
-    try {
-      await fetchStatusSilently();
-    } finally {
-      setChecking(false);
-      setLastChecked(new Date().toLocaleTimeString());
-    }
+    try { await fetchStatusSilently(); }
+    finally { setChecking(false); setLastChecked(new Date().toLocaleTimeString()); }
   };
 
-  const handleLogout = () => {
-    logout();
-    navigate('/driver-login');
-  };
+  const handleLogout = () => { logout(); navigate('/driver-login'); };
+
+  const rows = [
+    { icon: User,   label: 'Name',       value: profile?.name || user?.name || 'Driver' },
+    { icon: User,   label: 'Email',      value: profile?.email || user?.username || user?.email || '—' },
+    { icon: MapPin, label: 'Route',      value: profile?.route || user?.route || 'Assigned Route' },
+    { icon: Bus,    label: 'Bus Number', value: profile?.bus_number || profile?.busNumber || user?.busNumber || 'Assigned Bus' },
+  ];
 
   return (
-    <div className="min-h-screen bg-[#080c14] text-zinc-100 flex flex-col justify-between overflow-x-hidden font-sans relative">
-      <div className="absolute top-[20%] left-[10%] w-[40%] h-[40%] bg-amber-500/10 rounded-full blur-[160px] pointer-events-none"></div>
-      <div className="absolute bottom-[20%] right-[10%] w-[40%] h-[40%] bg-teal-500/10 rounded-full blur-[160px] pointer-events-none"></div>
+    <div className="min-h-screen bg-[#08080f] text-gray-100 flex flex-col overflow-x-hidden relative selection:bg-orange-500 selection:text-black">
+      <div className="absolute inset-0 bg-dots opacity-40 pointer-events-none z-0" />
+      <div className="absolute inset-0 overflow-hidden pointer-events-none z-0">
+        <div className="scan-line" style={{ top: '30%', animationDelay: '0s' }} />
+        <div className="scan-line" style={{ top: '70%', animationDelay: '3s' }} />
+      </div>
+      <div className="absolute top-0 right-0 w-[45%] h-[45%] bg-amber-500/5 rounded-full blur-[180px] pointer-events-none z-0" />
 
       <Navbar />
 
       <main className="flex-grow flex items-center justify-center px-6 pt-36 pb-20 z-10 w-full">
-        <div className="w-full max-w-lg relative">
+        <div className="w-full max-w-lg">
 
-          <div className="absolute inset-0 bg-gradient-to-r from-amber-500 to-teal-500 rounded-3xl blur-2xl opacity-15 pointer-events-none"></div>
+          <div className="bg-[#111118] border border-gray-800/60 border-l-4 border-l-amber-400 rounded-xl shadow-2xl overflow-hidden p-8">
 
-          <div className="relative bg-zinc-900/60 backdrop-blur-xl border border-zinc-800/80 rounded-3xl shadow-2xl overflow-hidden p-8 text-center">
-
-            <div className="absolute top-0 left-0 w-full h-[3px] bg-amber-500"></div>
-
-            <div className="w-20 h-20 bg-amber-500/10 border border-amber-500/30 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner">
-              <Clock className="w-10 h-10 text-amber-400 animate-pulse" />
+            {/* Icon */}
+            <div className="flex items-center justify-center mb-6">
+              <div className="w-16 h-16 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
+                <Clock className="w-8 h-8 text-amber-400 animate-pulse" />
+              </div>
             </div>
 
-            <h2 className="text-2xl font-black text-white mb-2">Pending Admin Approval</h2>
+            <div className="text-center mb-6">
+              <div className="mono text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-1">Status: Pending</div>
+              <h2 className="text-2xl font-bold text-white">Awaiting Admin Approval</h2>
+              <p className="text-xs text-gray-500 mt-2 leading-relaxed font-normal max-w-sm mx-auto">
+                Your registration is submitted. This screen will automatically redirect once your account is approved.
+              </p>
+            </div>
 
-            <div className="p-4 bg-amber-950/40 border border-amber-800/60 rounded-2xl text-xs text-amber-200 mb-6 leading-relaxed">
+            <div className="bg-amber-500/5 border border-amber-500/15 rounded-lg p-4 text-xs text-amber-300 mb-6 leading-relaxed mono text-center">
               "Your registration request has been submitted. Please wait for admin approval."
             </div>
 
-            <p className="text-xs text-zinc-400 font-normal mb-6">
-              Your driver account is waiting for admin approval. Once approved, this screen will automatically refresh and grant access to the Driver Dashboard.
-            </p>
-
+            {/* Application details */}
             {(profile || user) && (
-              <div className="bg-zinc-950/80 rounded-2xl p-5 border border-zinc-800 text-left mb-6 space-y-3">
-                <div className="text-[10px] uppercase font-bold text-zinc-500 tracking-widest mb-2">
-                  Application Details
-                </div>
-
-                <div className="flex items-center justify-between text-xs py-1 border-b border-zinc-900">
-                  <span className="text-zinc-400 flex items-center gap-1.5">
-                    <User className="w-3.5 h-3.5 text-zinc-500" /> Name
-                  </span>
-                  <span className="font-semibold text-white">{profile?.name || user?.name || 'Driver'}</span>
-                </div>
-
-                <div className="flex items-center justify-between text-xs py-1 border-b border-zinc-900">
-                  <span className="text-zinc-400 flex items-center gap-1.5">
-                    <User className="w-3.5 h-3.5 text-zinc-500" /> Email
-                  </span>
-                  <span className="font-semibold text-white">{profile?.email || user?.username || user?.email || '-'}</span>
-                </div>
-
-                <div className="flex items-center justify-between text-xs py-1 border-b border-zinc-900">
-                  <span className="text-zinc-400 flex items-center gap-1.5">
-                    <MapPin className="w-3.5 h-3.5 text-zinc-500" /> Route
-                  </span>
-                  <span className="font-semibold text-white">{profile?.route || user?.route || 'Assigned Route'}</span>
-                </div>
-
-                <div className="flex items-center justify-between text-xs py-1 border-b border-zinc-900">
-                  <span className="text-zinc-400 flex items-center gap-1.5">
-                    <Bus className="w-3.5 h-3.5 text-zinc-500" /> Bus Number
-                  </span>
-                  <span className="font-semibold text-white">{profile?.bus_number || profile?.busNumber || user?.busNumber || 'Assigned Bus'}</span>
-                </div>
-
-                <div className="flex items-center justify-between text-xs py-1">
-                  <span className="text-zinc-400">Current Status</span>
-                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 uppercase tracking-wide">
+              <div className="bg-[#0d0d16] rounded-xl p-5 border border-gray-800/60 mb-6 space-y-1">
+                <div className="mono text-[10px] uppercase font-bold text-gray-600 tracking-widest mb-3">Application Details</div>
+                {rows.map(({ icon: Icon, label, value }) => (
+                  <div key={label} className="flex items-center justify-between text-xs py-2.5 border-b border-gray-800/40 last:border-0">
+                    <span className="text-gray-500 flex items-center gap-2">
+                      <Icon className="w-3.5 h-3.5 text-gray-700" /> {label}
+                    </span>
+                    <span className="font-semibold text-white mono">{value}</span>
+                  </div>
+                ))}
+                <div className="flex items-center justify-between text-xs pt-2.5">
+                  <span className="text-gray-500">Current Status</span>
+                  <span className="px-2.5 py-0.5 rounded-md text-[10px] font-bold mono bg-amber-500/10 text-amber-400 border border-amber-500/20 uppercase">
                     {profile?.approval_status || profile?.status || 'pending'}
                   </span>
                 </div>
@@ -146,32 +114,27 @@ export default function DriverPending() {
               <button
                 onClick={fetchStatus}
                 disabled={checking}
-                className="flex-1 py-3 bg-zinc-800 hover:bg-zinc-750 text-white rounded-xl text-xs font-bold transition-all border border-zinc-700 flex items-center justify-center gap-2 cursor-pointer"
+                className="flex-1 py-3 bg-[#1a1a26] hover:bg-[#212130] text-white rounded-lg text-xs font-bold transition-all border border-gray-700/60 flex items-center justify-center gap-2 cursor-pointer"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${checking ? 'animate-spin' : ''}`} />
-                <span>{checking ? 'Checking Status...' : 'Refresh Status'}</span>
+                {checking ? 'Checking...' : 'Refresh Status'}
               </button>
-
               <button
                 onClick={handleLogout}
-                className="py-3 px-5 bg-rose-950/40 hover:bg-rose-900/50 text-rose-300 rounded-xl text-xs font-bold transition-all border border-rose-800/60 flex items-center justify-center gap-2 cursor-pointer"
+                className="py-3 px-5 bg-red-950/30 hover:bg-red-900/40 text-red-400 rounded-lg text-xs font-bold transition-all border border-red-800/40 flex items-center justify-center gap-2 cursor-pointer"
               >
                 <LogOut className="w-3.5 h-3.5" />
-                <span>Log Out</span>
+                Log Out
               </button>
             </div>
 
-            <div className="mt-4 text-[10px] text-zinc-500 font-mono">
-              Last checked at {lastChecked} &middot; Auto-polling enabled
+            <div className="mt-4 text-center mono text-[10px] text-gray-700">
+              Last checked: {lastChecked} · Auto-polling every 2s
             </div>
-
           </div>
+
         </div>
       </main>
-
-      <footer className="w-full max-w-7xl mx-auto px-6 py-6 border-t border-zinc-900/80 text-center text-[11px] text-zinc-500 font-normal z-10">
-        Bus Tracker Telemetry &middot; Driver Status Monitor
-      </footer>
     </div>
   );
 }

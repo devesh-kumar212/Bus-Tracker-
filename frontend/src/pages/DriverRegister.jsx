@@ -62,6 +62,13 @@ export default function DriverRegister() {
   const handleDigitChange = (index, value) => {
     if (!/^\d*$/.test(value)) return;
 
+    if (value.length > 1) {
+      const pastedDigits = value.slice(0, 6).split('');
+      setOtpDigits([...pastedDigits, ...Array(6 - pastedDigits.length).fill('')]);
+      digitInputRefs[Math.min(pastedDigits.length, 5)].current?.focus();
+      return;
+    }
+
     const newDigits = [...otpDigits];
     newDigits[index] = value.slice(-1);
     setOtpDigits(newDigits);
@@ -111,9 +118,11 @@ export default function DriverRegister() {
     setSendingOtp(true);
 
     try {
-      await sendEmailOtp(email);
+      const otpResult = await sendEmailOtp(email);
 
-      setSuccessMsg(`Verification 6-digit OTP code sent to ${email.trim()}. Check your email inbox.`);
+      setSuccessMsg(otpResult.developmentFallback
+        ? `Email service is unavailable. Local development verification code: ${otpResult.developmentOtp}`
+        : `Verification 6-digit OTP code sent to ${email.trim()}. Check your email inbox.`);
       setStep(2);
       setResendTimer(60);
       setCanResend(false);
@@ -147,7 +156,7 @@ export default function DriverRegister() {
 
     try {
       // 1. Verify OTP with backend Gmail service
-      await verifyEmailOtp(email, fullOtp);
+      const verification = await verifyEmailOtp(email, fullOtp);
 
       // 2. Register Driver in Supabase Auth & create profiles + drivers records with status: "pending"
       await signUpDriver({
@@ -155,7 +164,8 @@ export default function DriverRegister() {
         email: email.trim().toLowerCase(),
         password,
         route: route.trim(),
-        busNumber: busNumber.trim().toUpperCase()
+        busNumber: busNumber.trim().toUpperCase(),
+        verificationToken: verification.verificationToken
       });
 
       // 3. Show required success banner
@@ -365,7 +375,9 @@ export default function DriverRegister() {
                           key={idx}
                           ref={digitInputRefs[idx]}
                           type="text"
-                          maxLength={1}
+                          maxLength={idx === 0 ? 6 : 1}
+                          inputMode="numeric"
+                          autoComplete={idx === 0 ? 'one-time-code' : 'off'}
                           value={digit}
                           onChange={(e) => handleDigitChange(idx, e.target.value)}
                           onKeyDown={(e) => handleKeyDown(idx, e)}

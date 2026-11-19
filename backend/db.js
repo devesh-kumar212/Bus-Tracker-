@@ -3,7 +3,7 @@ const { open } = require('sqlite');
 const path = require('path');
 const fs = require('fs');
 
-const dbPath = path.resolve(__dirname, 'database.sqlite');
+const dbPath = process.env.TRACKMYBUS_DB_PATH || path.resolve(__dirname, 'database.sqlite');
 
 let db = null;
 
@@ -32,6 +32,16 @@ async function initDb() {
     console.log('Database schema loaded successfully.');
   } else {
     console.error('schema.sql not found at ' + schemaPath);
+  }
+
+  // Migrate existing SQLite installations without dropping driver data.
+  for (const statement of [
+    'ALTER TABLE users ADD COLUMN bus_number TEXT',
+    'ALTER TABLE users ADD COLUMN assigned_route TEXT'
+  ]) {
+    try { await connection.exec(statement); } catch (error) {
+      if (!String(error.message).includes('duplicate column name')) throw error;
+    }
   }
 }
 
@@ -77,9 +87,10 @@ async function getOrGenerateRoutePolyline(routeId, db) {
   const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${query}?overview=full&geometries=geojson`;
 
   try {
-    const response = await fetch(osrmUrl);
+    const response = await fetch(osrmUrl, { signal: AbortSignal.timeout(12000) });
+    if (!response.ok) return [];
     const data = await response.json();
-    if (data.routes && data.routes[0]) {
+    if (data.code === 'Ok' && data.routes?.[0]?.geometry?.coordinates?.length) {
       // OSRM coordinates are in [lng, lat] format, convert to [lat, lng] for Leaflet
       const polylinePoints = data.routes[0].geometry.coordinates.map(coord => [coord[1], coord[0]]);
       
@@ -91,9 +102,8 @@ async function getOrGenerateRoutePolyline(routeId, db) {
     console.error('Error generating polyline from OSRM:', err);
   }
 
-  // Fallback to straight segments connecting stops
-  const fallbackPoints = coordsList.map(c => [c.lat, c.lng]);
-  return fallbackPoints;
+  // Do not draw straight stop-to-stop lines as if they were drivable roads.
+  return [];
 }
 
 module.exports = {

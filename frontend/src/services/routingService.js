@@ -1,3 +1,5 @@
+import { searchPlacesWithNominatim } from './placeService';
+
 const API_HOST = typeof window !== 'undefined'
   ? `${window.location.protocol}//${window.location.hostname}:5000`
   : 'http://localhost:5000';
@@ -82,16 +84,16 @@ export const KNOWN_ROUTE_WAYPOINTS = {
     [26.4388, 74.6995]  // GECA College
   ],
   'college -> bus stand': [
-    [26.4696, 74.6447],
-    [26.4715, 74.6625],
+    [26.4388, 74.6995],
     [26.4435, 74.6545],
-    [26.4388, 74.6995]
+    [26.4715, 74.6625],
+    [26.4696, 74.6447]
   ],
   'college to bus stand': [
-    [26.4696, 74.6447],
-    [26.4715, 74.6625],
+    [26.4388, 74.6995],
     [26.4435, 74.6545],
-    [26.4388, 74.6995]
+    [26.4715, 74.6625],
+    [26.4696, 74.6447]
   ],
   'ajmer bus stand to shreenagar ajmer': [
     [26.4696, 74.6447], // Ajmer Bus Stand
@@ -141,21 +143,36 @@ export const PREDEFINED_BUS_STOPS = {
  * Fetch ordered bus stops for a specific route name
  */
 export function getRouteStops(routeName) {
-  const norm = (routeName || '').trim().toLowerCase();
+  const norm = normalizeRouteName(routeName);
   if (PREDEFINED_BUS_STOPS[norm]) {
     return PREDEFINED_BUS_STOPS[norm];
   }
-  if (norm.includes('pushkar')) {
-    return PREDEFINED_BUS_STOPS['bus stand to pushkar'];
-  }
-  return PREDEFINED_BUS_STOPS['geca to gweca'];
+  const waypoints = resolveWaypointsFromRouteString(routeName);
+  if (!waypoints) return [];
+  const endpoints = [waypoints[0], waypoints[waypoints.length - 1]];
+  const parts = getRouteEndpoints(routeName);
+  return endpoints.map(([latitude, longitude], index) => ({
+    id: `route-${index}-${latitude}-${longitude}`,
+    name: parts?.[index] || (index === 0 ? 'Route start' : 'Route destination'),
+    latitude, longitude, stop_order: index + 1, category: 'stop', icon: '📍'
+  }));
+}
+
+function normalizeRouteName(routeName) {
+  return (routeName || '').trim().toLowerCase()
+    .replace(/^.*?:\s*/, '').replace(/[→➜]/g, ' to ').replace(/\s+/g, ' ').trim();
+}
+
+export function getRouteEndpoints(routeName) {
+  const parts = normalizeRouteName(routeName).split(/\s+(?:to|->|-)\s+/);
+  return parts.length >= 2 ? [parts[0].trim(), parts[parts.length - 1].trim()] : null;
 }
 
 /**
  * Automatically resolves coordinates from a route string (e.g., "GECA to GWECA" or "Bus Stand to Pushkar")
  */
 function resolveWaypointsFromRouteString(routeName) {
-  const norm = (routeName || '').trim().toLowerCase();
+  const norm = normalizeRouteName(routeName);
   
   if (KNOWN_ROUTE_WAYPOINTS[norm]) {
     return KNOWN_ROUTE_WAYPOINTS[norm];
@@ -170,14 +187,13 @@ function resolveWaypointsFromRouteString(routeName) {
     let startCoord = null;
     let endCoord = null;
 
-    Object.keys(KNOWN_LOCATIONS).forEach(key => {
-      if (!startCoord && (startToken.includes(key) || key.includes(startToken))) {
-        startCoord = KNOWN_LOCATIONS[key];
-      }
-      if (!endCoord && (endToken.includes(key) || key.includes(endToken))) {
-        endCoord = KNOWN_LOCATIONS[key];
-      }
-    });
+    const findLocation = token => Object.keys(KNOWN_LOCATIONS)
+      .sort((a, b) => b.length - a.length)
+      .find(key => token.includes(key) || key.includes(token));
+    const startKey = findLocation(startToken);
+    const endKey = findLocation(endToken);
+    startCoord = startKey ? KNOWN_LOCATIONS[startKey] : null;
+    endCoord = endKey ? KNOWN_LOCATIONS[endKey] : null;
 
     if (startCoord && endCoord) {
       // If GECA to GWECA or GWECA to GECA, inject Ajmer Bypass NH 448 Sedariya waypoint
@@ -193,7 +209,27 @@ function resolveWaypointsFromRouteString(routeName) {
   }
 
   // Default fallback to GECA -> GWECA highway route
-  return KNOWN_ROUTE_WAYPOINTS['geca to gweca'];
+  return null;
+}
+
+async function resolveRouteWaypoints(routeName) {
+  const knownWaypoints = resolveWaypointsFromRouteString(routeName);
+  if (knownWaypoints?.length > 1) return knownWaypoints;
+
+  const endpoints = getRouteEndpoints(routeName);
+  if (!endpoints) return null;
+  const resolved = await Promise.all(endpoints.map(async endpoint => {
+    const token = endpoint.toLowerCase();
+    const knownKey = Object.keys(KNOWN_LOCATIONS)
+      .sort((a, b) => b.length - a.length)
+      .find(key => token.includes(key) || key.includes(token));
+    if (knownKey) return KNOWN_LOCATIONS[knownKey];
+
+    const results = await searchPlacesWithNominatim(`${endpoint}, Ajmer, Rajasthan, India`);
+    const place = results.find(result => Number.isFinite(result.latitude) && Number.isFinite(result.longitude));
+    return place ? [place.latitude, place.longitude] : null;
+  }));
+  return resolved.every(Boolean) ? resolved : null;
 }
 
 /**
@@ -207,7 +243,10 @@ export async function fetchRoadRoute({ routeName, waypoints }) {
   // Resolve waypoints array dynamically
   let routeWaypoints = waypoints;
   if (!Array.isArray(routeWaypoints) || routeWaypoints.length < 2) {
-    routeWaypoints = resolveWaypointsFromRouteString(normName);
+    routeWaypoints = await resolveRouteWaypoints(routeName);
+  }
+  if (!Array.isArray(routeWaypoints) || routeWaypoints.length < 2) {
+    return { success: false, error: 'This route needs a recognized start and destination before it can be drawn.' };
   }
 
   const cacheKey = `${normName}_${JSON.stringify(routeWaypoints)}`;
@@ -231,6 +270,8 @@ export async function fetchRoadRoute({ routeName, waypoints }) {
         polyline: data.polyline, // [[lat, lng], ...]
         distanceKm: data.distanceKm,
         durationMin: data.durationMin,
+        source: data.source || 'Road routing',
+        waypoints: routeWaypoints,
         routeName: routeName || 'Assigned Road Route'
       };
       clientRouteCache.set(cacheKey, payload);
@@ -240,44 +281,8 @@ export async function fetchRoadRoute({ routeName, waypoints }) {
     console.warn('Backend routing proxy notice:', err.message);
   }
 
-  // 2. Direct OpenRouteService API Fallback
-  try {
-    const orsApiKey = import.meta.env.VITE_ORS_API_KEY || 'eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6ImIzODNkNzE3N2FhZjQ2OTI5NTc2ZGE5ZDIyZDEyYzQ0IiwiaCI6Im11cm11cjY0In0=';
-    const orsCoordinates = routeWaypoints.map(pt => [pt[1], pt[0]]); // [lng, lat]
-
-    const orsRes = await fetch('https://api.openrouteservice.org/v2/directions/driving-car/geojson', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': orsApiKey
-      },
-      body: JSON.stringify({ coordinates: orsCoordinates })
-    });
-
-    const orsData = await orsRes.json();
-
-    if (orsRes.ok && orsData.features && orsData.features[0]) {
-      const feature = orsData.features[0];
-      const geoCoords = feature.geometry.coordinates;
-      const polylinePoints = geoCoords.map(coord => [coord[1], coord[0]]); // [lat, lng]
-      const summary = feature.properties.summary || {};
-
-      const payload = {
-        success: true,
-        polyline: polylinePoints,
-        distanceKm: summary.distance ? parseFloat((summary.distance / 1000).toFixed(1)) : 0,
-        durationMin: summary.duration ? Math.round(summary.duration / 60) : 0,
-        routeName: routeName || 'Assigned Road Route'
-      };
-      clientRouteCache.set(cacheKey, payload);
-      return payload;
-    }
-  } catch (directErr) {
-    console.error('Direct ORS fetch notice:', directErr);
-  }
-
   return {
     success: false,
-    error: 'Road route could not be found.'
+    error: 'No drivable road route could be found between these stops.'
   };
 }

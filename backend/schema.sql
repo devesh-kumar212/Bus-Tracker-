@@ -6,6 +6,8 @@ CREATE TABLE IF NOT EXISTS users (
     password TEXT NOT NULL,
     role TEXT CHECK(role IN ('admin', 'driver')) NOT NULL,
     is_approved INTEGER DEFAULT 1,
+    bus_number TEXT,
+    assigned_route TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -72,6 +74,38 @@ CREATE TABLE IF NOT EXISTS trip_logs (
     longitude REAL NOT NULL,
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (trip_id) REFERENCES trips(id) ON DELETE CASCADE
+);
+
+-- Current bus telemetry. One mutable row per assigned driver/bus; history remains in trip_logs if required.
+CREATE TABLE IF NOT EXISTS bus_locations (
+    driver_id TEXT PRIMARY KEY,
+    bus_number TEXT NOT NULL UNIQUE,
+    driver_name TEXT NOT NULL,
+    driver_email TEXT,
+    route TEXT NOT NULL,
+    latitude REAL,
+    longitude REAL,
+    accuracy REAL,
+    speed REAL,
+    heading REAL,
+    tracking_status TEXT NOT NULL CHECK(tracking_status IN ('ACTIVE', 'INACTIVE')) DEFAULT 'INACTIVE',
+    last_update TEXT,
+    last_heartbeat_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_bus_locations_status_heartbeat
+    ON bus_locations(tracking_status, last_heartbeat_at);
+
+-- OTP challenges and one-time signup proofs must survive API restarts.
+CREATE TABLE IF NOT EXISTS email_verifications (
+    email TEXT PRIMARY KEY COLLATE NOCASE,
+    otp_hash TEXT,
+    expires_at INTEGER,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    proof_id TEXT,
+    proof_expires_at INTEGER,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Complaints Table

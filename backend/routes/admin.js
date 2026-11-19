@@ -4,7 +4,7 @@ const bcrypt = require('bcryptjs');
 const { getDb } = require('../db');
 const { authenticateToken } = require('./auth');
 
-// Middleware to verify admin role
+
 function requireAdmin(req, res, next) {
   if (req.user && req.user.role === 'admin') {
     next();
@@ -13,13 +13,10 @@ function requireAdmin(req, res, next) {
   }
 }
 
-// Apply authentication & admin authorization to all admin endpoints
+
 router.use(authenticateToken);
 router.use(requireAdmin);
 
-// ==================== BUSES ENDPOINTS ====================
-
-// List all buses
 router.get('/buses', async (req, res) => {
   try {
     const db = await getDb();
@@ -29,8 +26,6 @@ router.get('/buses', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
-// Add new bus
 router.post('/buses', async (req, res) => {
   const { bus_number, capacity, status } = req.body;
   if (!bus_number || !capacity) {
@@ -52,7 +47,6 @@ router.post('/buses', async (req, res) => {
   }
 });
 
-// Update bus details/status
 router.put('/buses/:id', async (req, res) => {
   const { bus_number, capacity, status } = req.body;
   const { id } = req.params;
@@ -69,7 +63,6 @@ router.put('/buses/:id', async (req, res) => {
   }
 });
 
-// Delete a bus
 router.delete('/buses/:id', async (req, res) => {
   const { id } = req.params;
   try {
@@ -81,9 +74,6 @@ router.delete('/buses/:id', async (req, res) => {
   }
 });
 
-// ==================== DRIVERS ENDPOINTS ====================
-
-// List all drivers
 router.get('/drivers', async (req, res) => {
   try {
     const db = await getDb();
@@ -248,8 +238,6 @@ router.post('/stops', async (req, res) => {
   }
 });
 
-// ==================== COMPLAINTS ENDPOINTS ====================
-
 // List all complaints
 router.get('/complaints', async (req, res) => {
   try {
@@ -274,8 +262,6 @@ router.put('/complaints/:id/resolve', async (req, res) => {
   }
 });
 
-// ==================== TRIP MONITORING ENDPOINTS ====================
-
 // List currently active trips
 router.get('/active-trips', async (req, res) => {
   try {
@@ -295,41 +281,50 @@ router.get('/active-trips', async (req, res) => {
   }
 });
 
-// ==================== DRIVER APPROVALS ENDPOINTS ====================
-
-// List pending driver registration requests (is_approved = 0)
 router.get('/pending-drivers', async (req, res) => {
   try {
     const db = await getDb();
-    const pendingDrivers = await db.all("SELECT id, name, username, created_at FROM users WHERE role = 'driver' AND is_approved = 0 ORDER BY created_at DESC");
+    const pendingDrivers = await db.all("SELECT id, name, username, bus_number, assigned_route, created_at FROM users WHERE role = 'driver' AND is_approved = 0 ORDER BY created_at DESC");
     res.json(pendingDrivers);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// Approve a pending driver request (set is_approved = 1)
+
 router.post('/pending-drivers/:id/approve', async (req, res) => {
   const { id } = req.params;
+  const email = (req.body?.email || req.query?.email || req.body?.username || '').trim().toLowerCase();
+  const busNumber = String(req.body?.busNumber || req.body?.bus_number || '').trim().toUpperCase();
+  const assignedRoute = String(req.body?.route || req.body?.assigned_route || '').trim();
+  if (!busNumber || !assignedRoute) {
+    return res.status(400).json({ error: 'Assign both a bus number and route before approving this driver.' });
+  }
   try {
     const db = await getDb();
-    let user = await db.get("SELECT id FROM users WHERE (id = ? OR username = ?) AND role = 'driver'", [id, id]);
+    let user = await db.get(
+      "SELECT id FROM users WHERE (id = ? OR LOWER(username) = LOWER(?) OR (LOWER(username) = LOWER(?) AND ? != '')) AND role = 'driver'",
+      [id, id, email, email]
+    );
     if (!user) {
       return res.status(404).json({ error: 'Pending driver registration request not found.' });
     }
-    await db.run("UPDATE users SET is_approved = 1 WHERE id = ?", [user.id]);
-    res.json({ success: true, message: 'Driver registration request approved successfully.' });
+    await db.run("UPDATE users SET is_approved = 1, bus_number = ?, assigned_route = ? WHERE id = ?", [busNumber, assignedRoute, user.id]);
+    res.json({ success: true, assignmentSaved: true, message: 'Driver registration request approved successfully.' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// Reject a pending driver request (delete the user record)
 router.delete('/pending-drivers/:id/reject', async (req, res) => {
   const { id } = req.params;
+  const email = (req.body?.email || req.query?.email || req.body?.username || '').trim().toLowerCase();
   try {
     const db = await getDb();
-    let user = await db.get("SELECT id FROM users WHERE (id = ? OR username = ?) AND role = 'driver'", [id, id]);
+    let user = await db.get(
+      "SELECT id FROM users WHERE (id = ? OR LOWER(username) = LOWER(?) OR (LOWER(username) = LOWER(?) AND ? != '')) AND role = 'driver'",
+      [id, id, email, email]
+    );
     if (!user) {
       return res.status(404).json({ error: 'Pending driver registration request not found.' });
     }

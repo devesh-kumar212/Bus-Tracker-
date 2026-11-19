@@ -3,9 +3,10 @@ import { useNavigate } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import { 
   getAllActiveBusesWithLocations, 
+  getPublicRouteCatalog,
   subscribeToAllBusLocationsRealtime 
 } from '../services/authService';
-import { fetchRoadRoute, getRouteStops } from '../services/routingService';
+import { fetchRoadRoute, getRouteEndpoints, getRouteStops } from '../services/routingService';
 import { searchPlacesWithNominatim, getRoutePOIs } from '../services/placeService';
 import { 
   Bus, 
@@ -40,6 +41,10 @@ export default function PassengerDashboard() {
 
   // State management
   const [buses, setBuses] = useState([]);
+  const [routeCatalog, setRouteCatalog] = useState([]);
+  const [routeFrom, setRouteFrom] = useState('');
+  const [routeTo, setRouteTo] = useState('');
+  const [routeSearchActive, setRouteSearchActive] = useState(false);
   const [selectedBusId, setSelectedBusId] = useState(null);
   const [selectedRouteInfo, setSelectedRouteInfo] = useState(null);
   const [selectedRouteStops, setSelectedRouteStops] = useState([]);
@@ -70,6 +75,7 @@ export default function PassengerDashboard() {
   const searchMarkersRef = useRef([]); // Leaflet Markers for Nominatim search
   const watchLocationIdRef = useRef(null);
   const realtimeUnsubRef = useRef(null);
+  const busFetchInFlightRef = useRef(false);
 
   // Helper function to calculate relative time string (e.g. "5 seconds ago")
   const getRelativeTime = (timestamp) => {
@@ -144,7 +150,13 @@ export default function PassengerDashboard() {
     if (!bus.route) return;
 
     // Load ordered bus stops for route timeline card
-    const routeStops = getRouteStops(bus.route);
+    const configuredRoute = routeCatalog.find(route =>
+      (bus.route_id && String(route.id) === String(bus.route_id)) ||
+      route.route_name?.trim().toLowerCase() === bus.route?.trim().toLowerCase()
+    );
+    const routeStops = configuredRoute?.stops?.length
+      ? configuredRoute.stops.map(stop => ({ ...stop, icon: '📍' }))
+      : getRouteStops(bus.route);
     setSelectedRouteStops(routeStops);
 
     const map = mapInstanceRef.current;
@@ -253,7 +265,10 @@ export default function PassengerDashboard() {
     setLoadingRoute(true);
     try {
       // Fetch road route geometry from OpenRouteService
-      const routeRes = await fetchRoadRoute({ routeName: bus.route });
+      const configuredWaypoints = configuredRoute?.stops?.length > 1
+        ? configuredRoute.stops.map(stop => [Number(stop.latitude), Number(stop.longitude)])
+        : undefined;
+      const routeRes = await fetchRoadRoute({ routeName: bus.route, waypoints: configuredWaypoints });
 
       if (routeRes.success && Array.isArray(routeRes.polyline) && routeRes.polyline.length > 1) {
         if (map) {
@@ -270,12 +285,31 @@ export default function PassengerDashboard() {
 
           // Fit map bounds to show full route path with padding
           map.fitBounds(polyline.getBounds(), { padding: [40, 40], maxZoom: 16 });
+
+          if (routeStops.length === 0 && routeRes.waypoints?.length >= 2) {
+            const labels = getRouteEndpoints(bus.route) || [];
+            const routeEnds = [routeRes.waypoints[0], routeRes.waypoints[routeRes.waypoints.length - 1]];
+            const dynamicStops = routeEnds.map(([latitude, longitude], index) => ({
+              id: `resolved-route-end-${bus.driver_id}-${index}`,
+              name: labels[index] || (index === 0 ? 'Route start' : 'Destination'),
+              latitude, longitude, stop_order: index + 1, icon: '📍'
+            }));
+            dynamicStops.forEach((stop, index) => {
+              const marker = L.circleMarker([stop.latitude, stop.longitude], {
+                radius: 7, color: '#ffffff', weight: 2,
+                fillColor: index === 0 ? '#10b981' : '#f43f5e', fillOpacity: 1
+              }).addTo(map).bindTooltip(`${index === 0 ? 'Start' : 'Destination'}: ${stop.name}`);
+              stopMarkersRef.current.push(marker);
+            });
+            setSelectedRouteStops(dynamicStops);
+          }
         }
 
         setSelectedRouteInfo({
           routeName: bus.route,
           distanceKm: routeRes.distanceKm,
-          durationMin: routeRes.durationMin
+          durationMin: routeRes.durationMin,
+          source: routeRes.source || 'OpenRouteService'
         });
       } else {
         setRoutingError(routeRes.error || 'Road route could not be found.');
@@ -394,19 +428,36 @@ export default function PassengerDashboard() {
 
   // 1. Initial Load & Periodic Bus Data Fetching
   const fetchBusesData = async () => {
+    if (busFetchInFlightRef.current) return;
+    busFetchInFlightRef.current = true;
     try {
       const activeBuses = await getAllActiveBusesWithLocations();
       setBuses(activeBuses);
       setLastSyncTime(new Date());
     } catch (err) {
       console.error('Error fetching live bus data:', err);
+      const now = Date.now();
+      setBuses(previous => previous.map(bus => {
+        const heartbeatAge = bus.last_heartbeat_at ? now - new Date(bus.last_heartbeat_at).getTime() : Infinity;
+        const locationAge = bus.updated_at ? now - new Date(bus.updated_at).getTime() : Infinity;
+        const status = !bus.is_tracking || heartbeatAge > 120000 ? 'OFFLINE'
+          : locationAge <= 30000 ? 'LIVE' : locationAge <= 90000 ? 'DELAYED' : 'STALE';
+        return { ...bus, status_code: status, status_label: status };
+      }));
     } finally {
+      busFetchInFlightRef.current = false;
       setLoading(false);
     }
   };
 
+  const fetchRoutesData = async () => {
+    const routes = await getPublicRouteCatalog();
+    setRouteCatalog(routes);
+  };
+
   useEffect(() => {
     fetchBusesData();
+    fetchRoutesData();
 
     // 3-second polling fallback to guarantee real-time updates across browsers/tabs
     const pollInterval = setInterval(() => {
@@ -624,37 +675,17 @@ export default function PassengerDashboard() {
     // Filter to active buses with valid coordinates
     const onlineBuses = buses.filter(bus => bus.latitude !== null && bus.longitude !== null && bus.status_code !== 'UNAVAILABLE');
 
-    // If a specific bus/route is selected by passenger, show ONLY that selected bus on the map
-    const busesToDisplay = selectedBusId 
-      ? onlineBuses.filter(bus => bus.driver_id === selectedBusId || bus.id === selectedBusId || bus.user_id === selectedBusId)
-      : onlineBuses;
-
-    // Handle coordinate offset for overlapping buses so all markers remain distinctly visible
-    const processedBuses = busesToDisplay.map((bus, idx) => {
-      let lat = bus.latitude;
-      let lng = bus.longitude;
-      if (lat === null || lng === null) return null;
-
-      const isDuplicate = busesToDisplay.slice(0, idx).some(prev => 
-        prev.latitude !== null && prev.longitude !== null &&
-        Math.abs(prev.latitude - lat) < 0.0003 &&
-        Math.abs(prev.longitude - lng) < 0.0003
-      );
-
-      if (isDuplicate) {
-        lat += (idx * 0.00035);
-        lng += (idx * 0.00035);
-      }
-
-      return { ...bus, displayLat: lat, displayLng: lng };
-    }).filter(Boolean);
+    const processedBuses = onlineBuses
+      .filter(bus => Number.isFinite(Number(bus.latitude)) && Number.isFinite(Number(bus.longitude)))
+      .map(bus => ({ ...bus, displayLat: Number(bus.latitude), displayLng: Number(bus.longitude) }));
 
     processedBuses.forEach(bus => {
       activeDriverIds.add(bus.driver_id);
 
       const isLive = bus.status_code === 'LIVE';
-      const badgeBg = isLive ? '#10b981' : '#f59e0b';
-      const badgeGlow = isLive ? 'rgba(16, 185, 129, 0.6)' : 'rgba(245, 158, 11, 0.5)';
+      const isOffline = bus.status_code === 'OFFLINE';
+      const badgeBg = isLive ? '#10b981' : isOffline ? '#71717a' : '#f59e0b';
+      const badgeGlow = isLive ? 'rgba(16, 185, 129, 0.6)' : isOffline ? 'rgba(113, 113, 122, 0.4)' : 'rgba(245, 158, 11, 0.5)';
 
       // Custom HTML Bus Icon
       const busIcon = L.divIcon({
@@ -689,7 +720,7 @@ export default function PassengerDashboard() {
               border: 1px solid #ffffff;
               text-transform: uppercase;
             ">
-              ${isLive ? 'LIVE' : 'STALE'}
+              ${bus.status_code || 'OFFLINE'}
             </div>
           </div>
         `,
@@ -698,16 +729,14 @@ export default function PassengerDashboard() {
       });
 
       // HTML Popup content
-      const busPlate = bus.busNumber || (bus.driver_id === 'devesh' ? 'RJ-01-GB-5566' : 'RJ-14-PB-4455');
-      const busSpeed = bus.speed || (isLive ? 34 : 0);
-      const busEta = bus.eta || (isLive ? '8 min' : 'N/A');
+      const busSpeed = bus.speed !== null && bus.speed !== undefined && Number.isFinite(Number(bus.speed)) ? Math.round(Number(bus.speed) * 3.6) : '—';
 
       const popupHtml = `
         <div style="font-family: ui-sans-serif, system-ui, sans-serif; padding: 6px; min-width: 220px; color: #f8fafc;">
           <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; border-bottom: 1px solid #334155; padding-bottom: 6px;">
             <div>
               <span style="font-weight: 900; font-size: 15px; color: #f8fafc; display: block; line-height: 1.2;">Bus ${bus.bus_number}</span>
-              <span style="font-size: 10px; font-weight: 800; color: #38bdf8; letter-spacing: 0.5px;">${busPlate}</span>
+              <span style="font-size: 10px; font-weight: 800; color: #38bdf8; letter-spacing: 0.5px;">${bus.status_code}</span>
             </div>
             <span style="
               font-size: 10px;
@@ -718,7 +747,7 @@ export default function PassengerDashboard() {
               color: ${isLive ? '#6ee7b7' : '#fde68a'};
               border: 1px solid ${isLive ? '#059669' : '#d97706'};
             ">
-              ${bus.status_label}
+              ${bus.status_label || bus.status_code}
             </span>
           </div>
 
@@ -729,7 +758,7 @@ export default function PassengerDashboard() {
             </div>
             <div style="background: #0f172a; padding: 5px 8px; border-radius: 8px; border: 1px solid #1e293b;">
               <span style="font-size: 8px; color: #64748b; font-weight: 900; display: block; letter-spacing: 0.5px;">EST. ARRIVAL</span>
-              <span style="font-size: 12px; font-weight: 900; color: #06b6d4;">⏱️ ${busEta}</span>
+              <span style="font-size: 12px; font-weight: 900; color: #06b6d4;">—</span>
             </div>
           </div>
 
@@ -776,12 +805,51 @@ export default function PassengerDashboard() {
     });
   }, [buses, selectedBusId]);
 
-  // Filtered buses list based on search query
-  const filteredBuses = buses.filter(b => 
-    b.bus_number?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    b.route?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    b.name?.toLowerCase().includes(searchQuery.toLowerCase())
+  const getBusRoute = (bus) => routeCatalog.find(route =>
+    (bus.route_id && String(route.id) === String(bus.route_id)) ||
+    route.route_name?.trim().toLowerCase() === bus.route?.trim().toLowerCase()
   );
+
+  const routePlaces = Array.from(new Set([
+    ...routeCatalog.flatMap(route => (route.stops || []).map(stop => stop.name || stop.stop_name)),
+    ...buses.flatMap(bus => getBusRoute(bus)?.stops?.length
+      ? getBusRoute(bus).stops.map(stop => stop.name || stop.stop_name)
+      : getRouteStops(bus.route).map(stop => stop.name))
+  ].filter(Boolean)));
+
+  const matchesRouteSearch = (bus) => {
+    if (!routeSearchActive) return true;
+    const from = routeFrom.trim().toLowerCase();
+    const to = routeTo.trim().toLowerCase();
+    if (!from || !to) return false;
+    const stops = getBusRoute(bus)?.stops || getRouteStops(bus.route);
+    const fromIndex = stops.findIndex(stop => (stop.name || stop.stop_name || '').toLowerCase().includes(from));
+    const toIndex = stops.findIndex(stop => (stop.name || stop.stop_name || '').toLowerCase().includes(to));
+    if (fromIndex >= 0 && toIndex > fromIndex) return true;
+    const route = (bus.route || '').toLowerCase();
+    return route.includes(from) && route.includes(to) && route.indexOf(from) < route.indexOf(to);
+  };
+
+  const handleFindRoutes = (event) => {
+    event.preventDefault();
+    setRouteSearchActive(true);
+    setSearchQuery('');
+    handleDeselectBus();
+  };
+
+  const clearRouteSearch = () => {
+    setRouteSearchActive(false);
+    setRouteFrom('');
+    setRouteTo('');
+  };
+
+  // Filter buses by either route planner endpoints or the general bus search.
+  const filteredBuses = buses.filter(b => {
+    const search = searchQuery.trim().toLowerCase();
+    const matchesText = !search || b.bus_number?.toLowerCase().includes(search) ||
+      b.route?.toLowerCase().includes(search) || b.name?.toLowerCase().includes(search);
+    return matchesText && matchesRouteSearch(b);
+  });
 
   const activeCount = buses.filter(b => b.status_code === 'LIVE').length;
   const selectedBus = buses.find(b => b.driver_id === selectedBusId);
@@ -869,6 +937,33 @@ export default function PassengerDashboard() {
               </span>
             </div>
 
+            <form onSubmit={handleFindRoutes} className="rounded-2xl border border-emerald-900/70 bg-gradient-to-br from-emerald-950/50 to-zinc-950 p-3.5 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-xs font-black text-white">Where are you going?</div>
+                  <div className="text-[10px] text-zinc-500 mt-0.5">Find live buses along your route</div>
+                </div>
+                {routeSearchActive && <button type="button" onClick={clearRouteSearch} className="text-[10px] font-bold text-zinc-400 hover:text-white">Clear</button>}
+              </div>
+              <datalist id="route-stops-options">
+                {routePlaces.map(place => <option key={place} value={place} />)}
+              </datalist>
+              <div className="relative space-y-2">
+                <div className="absolute left-[13px] top-5 bottom-5 border-l border-dashed border-zinc-600" />
+                <label className="relative flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-950/80 px-2.5">
+                  <span className="w-2 h-2 rounded-full border-2 border-emerald-400 bg-zinc-950 shrink-0" />
+                  <input list="route-stops-options" value={routeFrom} onChange={event => setRouteFrom(event.target.value)} placeholder="Starting point" className="w-full bg-transparent py-2.5 text-xs text-white outline-none placeholder:text-zinc-600" />
+                </label>
+                <label className="relative flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-950/80 px-2.5">
+                  <MapPin className="w-4 h-4 text-rose-400 shrink-0" />
+                  <input list="route-stops-options" value={routeTo} onChange={event => setRouteTo(event.target.value)} placeholder="Destination" className="w-full bg-transparent py-2.5 text-xs text-white outline-none placeholder:text-zinc-600" />
+                </label>
+              </div>
+              <button type="submit" disabled={!routeFrom.trim() || !routeTo.trim()} className="w-full rounded-xl bg-emerald-400 py-2.5 text-xs font-black text-zinc-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-40">
+                Find buses
+              </button>
+            </form>
+
             {/* Search Input Filter */}
             <div className="relative">
               <Search className="w-4 h-4 text-zinc-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
@@ -948,13 +1043,15 @@ export default function PassengerDashboard() {
               ) : filteredBuses.length === 0 ? (
                 <div className="py-12 text-center text-xs text-zinc-500 space-y-2">
                   <Bus className="w-8 h-8 text-zinc-700 mx-auto" />
-                  <p>No active buses match your search filter.</p>
+                  <p>{routeSearchActive ? 'No buses run this way right now.' : 'No active buses match your search filter.'}</p>
                 </div>
               ) : (
                 filteredBuses.map((bus) => {
                   const isSelected = selectedBusId === bus.driver_id;
                   const isLive = bus.status_code === 'LIVE';
                   const isStale = bus.status_code === 'STALE';
+                  const isDelayed = bus.status_code === 'DELAYED';
+                  const isOffline = bus.status_code === 'OFFLINE';
 
                   return (
                     <div
@@ -968,7 +1065,7 @@ export default function PassengerDashboard() {
                     >
                       {/* Left accent indicator */}
                       <div className={`absolute top-0 left-0 bottom-0 w-[4px] ${
-                        isLive ? 'bg-emerald-500' : isStale ? 'bg-amber-500' : bus.latitude !== null ? 'bg-rose-500' : 'bg-zinc-700'
+                        isLive ? 'bg-emerald-500' : isStale || isDelayed ? 'bg-amber-500' : isOffline ? 'bg-rose-500' : 'bg-zinc-700'
                       }`}></div>
 
                       <div className="flex items-start justify-between gap-3 mb-2 pl-1">
@@ -993,9 +1090,9 @@ export default function PassengerDashboard() {
                         <span className={`px-2.5 py-1 rounded-xl text-[10px] font-black uppercase tracking-wider border shrink-0 ${
                           isLive
                             ? 'bg-emerald-950/80 text-emerald-300 border-emerald-500/50 shadow-[0_0_12px_rgba(16,185,129,0.2)]'
-                            : isStale
+                            : isStale || isDelayed
                             ? 'bg-amber-950/60 text-amber-300 border-amber-800/60'
-                            : bus.latitude !== null
+                            : isOffline
                             ? 'bg-rose-950/50 text-rose-300 border-rose-800/60'
                             : 'bg-zinc-900 text-zinc-500 border-zinc-800'
                         }`}>
@@ -1120,18 +1217,18 @@ export default function PassengerDashboard() {
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
                     <div className="bg-zinc-900/80 p-2.5 rounded-xl border border-zinc-800">
                       <div className="text-[10px] text-zinc-400">Road Distance</div>
-                      <div className="font-mono font-bold text-cyan-300 text-sm">{selectedRouteInfo.distanceKm} km</div>
+                      <div className="font-mono font-bold text-cyan-300 text-sm">{selectedRouteInfo.distanceKm ?? '—'}{selectedRouteInfo.distanceKm !== null ? ' km' : ''}</div>
                     </div>
 
                     <div className="bg-zinc-900/80 p-2.5 rounded-xl border border-zinc-800">
                       <div className="text-[10px] text-zinc-400">Est. Route Duration</div>
-                      <div className="font-mono font-bold text-cyan-300 text-sm">{selectedRouteInfo.durationMin} mins</div>
+                      <div className="font-mono font-bold text-cyan-300 text-sm">{selectedRouteInfo.durationMin ?? '—'}{selectedRouteInfo.durationMin !== null ? ' mins' : ''}</div>
                     </div>
 
                     <div className="bg-zinc-900/80 p-2.5 rounded-xl border border-zinc-800 col-span-2 sm:col-span-1 flex items-center justify-between">
                       <div>
                         <div className="text-[10px] text-zinc-400">Road Geometry</div>
-                        <div className="text-[11px] font-bold text-emerald-400">OpenRouteService</div>
+                        <div className="text-[11px] font-bold text-emerald-400">{selectedRouteInfo.source}</div>
                       </div>
                       <Zap className="w-4 h-4 text-emerald-400" />
                     </div>

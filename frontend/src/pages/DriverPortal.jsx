@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import { getAuthUser } from '../services/api';
-import { getDriverDetails, setDriverTrackingState, saveBusLocationToSupabase, logoutUser } from '../services/authService';
+import { getDriverDetails, getDriverTrackingStatus, sendDriverHeartbeat, setDriverTrackingState, saveBusLocationToSupabase, logoutUser } from '../services/authService';
 import { Bus, MapPin, Play, Square, LogOut, CheckCircle2, AlertCircle, Radio, User, Mail, Compass, Navigation, Clock, ShieldCheck } from 'lucide-react';
 
 export default function DriverPortal() {
@@ -15,7 +15,11 @@ export default function DriverPortal() {
 
   // Live GPS telemetry state
   const [gpsTelemetry, setGpsTelemetry] = useState(null);
+  const [databaseSync, setDatabaseSync] = useState('Waiting for GPS');
   const watchIdRef = useRef(null);
+  const heartbeatIdRef = useRef(null);
+  const gpsPollIdRef = useRef(null);
+  const savingLocationRef = useRef(false);
   const lastDbUpdateRef = useRef(0);
 
   // 1. Session restoration & Access control checks
@@ -49,7 +53,16 @@ export default function DriverPortal() {
             return;
           }
 
-          setIsTracking(details.isTracking);
+          const trackingStatus = await getDriverTrackingStatus();
+          const tracking = trackingStatus.tracking_status === 'ACTIVE';
+          setIsTracking(tracking);
+          if (trackingStatus.location?.latitude !== null && trackingStatus.location?.longitude !== null) {
+            const location = trackingStatus.location;
+            setGpsTelemetry({ latitude: location.latitude, longitude: location.longitude, accuracy: location.accuracy,
+              speed: location.speed, heading: location.heading,
+              timestamp: location.last_update ? new Date(location.last_update).toLocaleTimeString() : null });
+            setDatabaseSync(location.last_update ? 'Synced' : 'Waiting for GPS');
+          }
         }
       } catch (err) {
         console.error('Error verifying driver credentials:', err);
@@ -60,42 +73,39 @@ export default function DriverPortal() {
 
     loadAndVerifyDriver();
 
-    // Cleanup geolocation watcher on component unmount
-    return () => {
-      if (watchIdRef.current !== null) {
-        navigator.geolocation.clearWatch(watchIdRef.current);
-        watchIdRef.current = null;
-      }
-    };
   }, [user]);
 
   // 2. Real GPS WatchPosition Callbacks
   const handleGpsSuccess = async (position) => {
-    const { latitude, longitude, accuracy } = position.coords;
+    const { latitude, longitude, accuracy, speed, heading } = position.coords;
     const timeString = new Date(position.timestamp || Date.now()).toLocaleTimeString();
 
     setGpsTelemetry({
       latitude,
       longitude,
       accuracy,
+      speed,
+      heading,
       timestamp: timeString
     });
 
-    setActionNotice({ type: 'success', text: 'Live tracking is active' });
-
     // Throttle database upsert to once every 3 seconds to avoid API overload
     const now = Date.now();
-    if (now - lastDbUpdateRef.current >= 3000) {
+    if (now - lastDbUpdateRef.current >= 3000 && !savingLocationRef.current) {
       lastDbUpdateRef.current = now;
-      const driverId = driverInfo?.user_id || driverInfo?.id || user?.id || user?.uid;
-      if (driverId) {
-        await saveBusLocationToSupabase({
-          driverId,
-          userId: driverId,
-          latitude,
-          longitude,
-          accuracy
-        });
+      savingLocationRef.current = true;
+      setDatabaseSync('Saving…');
+      try {
+        const result = await saveBusLocationToSupabase({ latitude, longitude, accuracy, speed, heading });
+        const savedAt = result.location?.updated_at || new Date().toISOString();
+        setDatabaseSync(`Synced ${new Date(savedAt).toLocaleTimeString()}`);
+        setGpsTelemetry(current => ({ ...current, timestamp: new Date(savedAt).toLocaleTimeString() }));
+        setActionNotice({ type: 'success', text: 'GPS location saved and shared with passengers.' });
+      } catch (error) {
+        setDatabaseSync('Retrying');
+        setActionNotice({ type: 'error', text: `GPS is available, but database sync failed: ${error.message}` });
+      } finally {
+        savingLocationRef.current = false;
       }
     }
   };
@@ -122,6 +132,7 @@ export default function DriverPortal() {
         navigator.geolocation.clearWatch(watchIdRef.current);
         watchIdRef.current = null;
       }
+      setDriverTrackingState({ user, isTracking: false }).catch(() => {});
       setIsTracking(false);
     }
 
@@ -145,18 +156,8 @@ export default function DriverPortal() {
       await setDriverTrackingState({ user, isTracking: true });
       setIsTracking(true);
 
-      // Start continuous watchPosition
-      const options = {
-        enableHighAccuracy: true,
-        maximumAge: 2000,
-        timeout: 10000
-      };
-
-      watchIdRef.current = navigator.geolocation.watchPosition(
-        handleGpsSuccess,
-        handleGpsError,
-        options
-      );
+      lastDbUpdateRef.current = 0;
+      setActionNotice({ type: 'info', text: 'Tracking started. Waiting for the first GPS fix…' });
     } catch (err) {
       setActionNotice({ type: 'error', text: 'Failed to start tracking: ' + err.message });
       setIsTracking(false);
@@ -169,12 +170,6 @@ export default function DriverPortal() {
     if (!isTracking) return; // Prevent stopping when already stopped
 
     setLoading(true);
-
-    // 1. Clear active watchPosition
-    if (watchIdRef.current !== null) {
-      navigator.geolocation.clearWatch(watchIdRef.current);
-      watchIdRef.current = null;
-    }
 
     try {
       // 2. Set tracking state to inactive
@@ -194,9 +189,64 @@ export default function DriverPortal() {
       navigator.geolocation.clearWatch(watchIdRef.current);
       watchIdRef.current = null;
     }
+    if (gpsPollIdRef.current !== null) {
+      clearInterval(gpsPollIdRef.current);
+      gpsPollIdRef.current = null;
+    }
+    if (heartbeatIdRef.current !== null) {
+      clearInterval(heartbeatIdRef.current);
+      heartbeatIdRef.current = null;
+    }
+    if (isTracking) {
+      try { await setDriverTrackingState({ user, isTracking: false }); } catch (error) {
+        console.warn('Could not send tracking stop before logout; server heartbeat expiry will mark this bus offline.', error);
+      }
+    }
     await logoutUser();
     navigate('/driver-login');
   };
+
+  const gpsSuccessRef = useRef(handleGpsSuccess);
+  gpsSuccessRef.current = handleGpsSuccess;
+  const gpsErrorRef = useRef(handleGpsError);
+  gpsErrorRef.current = handleGpsError;
+
+  useEffect(() => {
+    if (!isTracking) return undefined;
+    if (!navigator.geolocation) {
+      setActionNotice({ type: 'error', text: 'Geolocation is not supported by this browser.' });
+      setDriverTrackingState({ user, isTracking: false }).catch(() => {});
+      setIsTracking(false);
+      return undefined;
+    }
+
+    const gpsOptions = { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 };
+    watchIdRef.current = navigator.geolocation.watchPosition(
+      position => gpsSuccessRef.current(position), handleGpsError,
+      gpsOptions
+    );
+    // watchPosition may not emit another event when the device is stationary.
+    // Sample periodically as well so the server's last GPS timestamp stays fresh.
+    const sampleCurrentPosition = () => navigator.geolocation.getCurrentPosition(
+      position => gpsSuccessRef.current(position),
+      error => { if (error.code === error.PERMISSION_DENIED) gpsErrorRef.current(error); },
+      gpsOptions
+    );
+    sampleCurrentPosition();
+    gpsPollIdRef.current = setInterval(sampleCurrentPosition, 5000);
+    heartbeatIdRef.current = setInterval(() => {
+      sendDriverHeartbeat().catch(error => setDatabaseSync(`Connection issue: ${error.message}`));
+    }, 10000);
+
+    return () => {
+      if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+      if (gpsPollIdRef.current !== null) clearInterval(gpsPollIdRef.current);
+      gpsPollIdRef.current = null;
+      if (heartbeatIdRef.current !== null) clearInterval(heartbeatIdRef.current);
+      heartbeatIdRef.current = null;
+    };
+  }, [isTracking]);
 
   if (loading && !driverInfo) {
     return (
@@ -247,7 +297,7 @@ export default function DriverPortal() {
                   : 'bg-rose-950/40 text-rose-300 border-rose-800/60'
               }`}>
                 <span className={`w-3 h-3 rounded-full ${isTracking ? 'bg-emerald-400 animate-ping' : 'bg-rose-500'}`}></span>
-                <span>{isTracking ? '🟢 LIVE' : '🔴 OFFLINE'}</span>
+                <span>{isTracking ? (gpsTelemetry ? 'TRACKING ACTIVE' : 'ACQUIRING GPS') : 'OFFLINE'}</span>
               </div>
             </div>
 
@@ -348,6 +398,11 @@ export default function DriverPortal() {
                         <Clock className="w-3 h-3 text-emerald-400" />
                         <span>{gpsTelemetry.timestamp}</span>
                       </div>
+                    </div>
+
+                    <div className="col-span-2 bg-zinc-950/70 p-3 rounded-xl border border-emerald-900/50 flex items-center justify-between">
+                      <div className="text-[10px] text-zinc-400">Database Sync</div>
+                      <div className={databaseSync.startsWith('Synced') ? 'text-[10px] font-bold text-emerald-300' : 'text-[10px] font-bold text-amber-300'}>{databaseSync}</div>
                     </div>
                   </div>
                 ) : (

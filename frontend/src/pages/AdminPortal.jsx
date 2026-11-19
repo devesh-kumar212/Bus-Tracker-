@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import MapContainer from '../components/MapContainer';
 import { apiRequest, logout, getAuthUser, initSocket, joinRoom, leaveRoom } from '../services/api';
-import { getPendingDrivers, approveDriver, rejectDriver } from '../services/authService';
+import { getPendingDrivers, approveDriver, rejectDriver, getAllActiveBusesWithLocations } from '../services/authService';
 import {
   Shield,
   Activity,
@@ -87,45 +87,52 @@ export default function AdminPortal() {
     const socket = initSocket();
 
     const handleLocationUpdate = (updatedBus) => {
-      console.log('Admin received socket location update:', updatedBus);
+      const driverId = updatedBus.driver_id || updatedBus.trip_id;
+      if (!driverId) return;
+      const row = {
+        ...updatedBus,
+        trip_id: driverId,
+        driver_id: driverId,
+        route_name: updatedBus.route_name || updatedBus.route,
+        current_latitude: updatedBus.latitude,
+        current_longitude: updatedBus.longitude,
+        last_update: updatedBus.updated_at || updatedBus.last_update,
+        status_code: 'LIVE',
+        status_label: 'LIVE',
+        is_tracking: true
+      };
       setActiveTrips(prev => {
-        const exists = prev.some(t => t.trip_id.toString() === updatedBus.trip_id.toString());
+        const exists = prev.some(t => String(t.driver_id || t.trip_id) === String(driverId));
         if (exists) {
-          return prev.map(t => 
-            t.trip_id.toString() === updatedBus.trip_id.toString()
-              ? {
-                  ...t,
-                  current_latitude: updatedBus.latitude,
-                  current_longitude: updatedBus.longitude,
-                  last_update: updatedBus.last_update
-                }
-              : t
-          );
+          return prev.map(t => String(t.driver_id || t.trip_id) === String(driverId) ? { ...t, ...row } : t);
         } else {
-          return [...prev, {
-            trip_id: updatedBus.trip_id,
-            bus_number: updatedBus.bus_number,
-            route_name: updatedBus.route_name,
-            current_latitude: updatedBus.latitude,
-            current_longitude: updatedBus.longitude,
-            last_update: updatedBus.last_update
-          }];
+          return [...prev, row];
         }
       });
     };
+    const handleTrackingChange = () => { loadMetrics(); };
 
     socket.on('location_changed', handleLocationUpdate);
+    socket.on('bus_tracking_changed', handleTrackingChange);
 
     return () => {
       socket.off('location_changed', handleLocationUpdate);
+      socket.off('bus_tracking_changed', handleTrackingChange);
     };
   }, [user]);
 
   // Loading initial stats summary
   const loadMetrics = async () => {
     try {
-      const activeTripsList = await apiRequest('/admin/active-trips');
-      setActiveTrips(activeTripsList);
+      const activeBuses = await getAllActiveBusesWithLocations();
+      setActiveTrips(activeBuses.map(bus => ({
+        ...bus,
+        trip_id: bus.driver_id,
+        route_name: bus.route,
+        current_latitude: bus.latitude,
+        current_longitude: bus.longitude,
+        last_update: bus.last_update
+      })));
     } catch (err) {
       console.error('Failed to load active fleet metrics:', err);
     }
@@ -135,9 +142,16 @@ export default function AdminPortal() {
     setLoading(true);
     try {
       if (activeTab === 'monitor') {
-        const activeTripsList = await apiRequest('/admin/active-trips');
+        const activeBuses = await getAllActiveBusesWithLocations();
         const stopsList = await apiRequest('/admin/stops');
-        setActiveTrips(activeTripsList);
+        setActiveTrips(activeBuses.map(bus => ({
+          ...bus,
+          trip_id: bus.driver_id,
+          route_name: bus.route,
+          current_latitude: bus.latitude,
+          current_longitude: bus.longitude,
+          last_update: bus.last_update
+        })));
         setStops(stopsList);
       } else if (activeTab === 'buses') {
         const busesList = await apiRequest('/admin/buses');
@@ -277,19 +291,8 @@ export default function AdminPortal() {
 
   const handleApproveDriver = async (driver) => {
     try {
-      const driverName = typeof driver === 'object' ? driver.name : 'Driver';
-
       const result = await approveDriver(driver);
-
-      if (typeof driver === 'object' && typeof driver.id === 'number') {
-        await apiRequest(`/admin/pending-drivers/${driver.id}/approve`, { method: 'POST' }).catch(() => {});
-      }
-
-      if (result && result.alreadyApproved) {
-        alert(`Driver "${driverName}" is already approved. Duplicate approval email was not sent.`);
-      } else {
-        alert(`Driver "${driverName}" has been approved! Confirmation email sent to ${driver.email || 'driver'}.`);
-      }
+      alert(`Driver "${driver.name || 'Driver'}" approved. ${result.emailSent ? 'Confirmation email sent.' : 'Email could not be sent; check the server SMTP settings.'}`);
       loadTabData();
     } catch (err) {
       alert('Failed to approve driver: ' + err.message);
@@ -300,13 +303,8 @@ export default function AdminPortal() {
     const driverName = typeof driver === 'object' ? driver.name : 'Driver';
     if (!confirm(`Are you sure you want to reject registration for "${driverName}"?`)) return;
     try {
-      await rejectDriver(driver);
-
-      if (typeof driver === 'object' && typeof driver.id === 'number') {
-        await apiRequest(`/admin/pending-drivers/${driver.id}/reject`, { method: 'DELETE' }).catch(() => {});
-      }
-
-      alert(`Driver registration for "${driverName}" was rejected.`);
+      const result = await rejectDriver(driver);
+      alert(`Driver registration for "${driverName}" was rejected. ${result.emailSent ? 'Notification email sent.' : 'Notification email could not be sent.'}`);
       loadTabData();
     } catch (err) {
       alert('Failed to reject driver: ' + err.message);
@@ -393,11 +391,14 @@ export default function AdminPortal() {
   // Convert activeTrips telemetry array to fit Map structure
   const monitorBuses = activeTrips.map(trip => ({
     trip_id: trip.trip_id,
+    driver_id: trip.driver_id || trip.trip_id,
     bus_number: trip.bus_number,
     route_name: trip.route_name,
     latitude: trip.current_latitude,
     longitude: trip.current_longitude,
-    last_update: trip.last_update
+    last_update: trip.last_update,
+    status_code: trip.status_code,
+    is_tracking: trip.is_tracking
   }));
 
   // Login component layout
@@ -616,8 +617,8 @@ export default function AdminPortal() {
                       >
                         <div className="flex justify-between items-start mb-2">
                           <h4 className="font-bold text-sm text-gray-200">🚌 {trip.bus_number}</h4>
-                          <span className="text-[9px] bg-indigo-900/60 text-indigo-300 font-bold px-1.5 py-0.5 rounded border border-indigo-800/40">
-                            TRIP #{trip.trip_id}
+                          <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${trip.status_code === 'LIVE' ? 'bg-emerald-900/60 text-emerald-300 border-emerald-800/40' : 'bg-slate-800 text-slate-300 border-slate-700'}`}>
+                            {trip.status_code || 'OFFLINE'}
                           </span>
                         </div>
                         <p className="text-xs text-slate-400 font-medium truncate">{trip.route_name}</p>
@@ -811,7 +812,7 @@ export default function AdminPortal() {
                             <td className="p-4 text-white font-bold">{d.name}</td>
                             <td className="p-4 font-semibold text-slate-300">{d.email || d.username}</td>
                             <td className="p-4 text-slate-300">{d.route || 'College → Bus Stand'}</td>
-                            <td className="p-4 font-mono font-bold text-cyan-400">{d.busNumber || d.bus_number || 'BUS-101'}</td>
+                            <td className="p-4 font-mono font-bold text-cyan-400">{d.busNumber || d.bus_number || '—'}</td>
                             <td className="p-4 text-slate-400">
                               {d.createdAt ? new Date(d.createdAt).toLocaleDateString() : d.created_at ? new Date(d.created_at).toLocaleDateString() : new Date().toLocaleDateString()}
                             </td>

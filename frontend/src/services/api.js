@@ -5,7 +5,17 @@ const API_HOST = typeof window !== 'undefined' ? `${window.location.protocol}//$
 const API_BASE = `${API_HOST}/api`;
 
 // Store/retrieve auth token and user
-export const getAuthToken = () => localStorage.getItem('tmb_token');
+export const getAuthToken = () => {
+  const token = localStorage.getItem('tmb_token');
+  // Old mock sessions were written as if they were Supabase access tokens.
+  // Expire them so users are sent through real authentication again.
+  if (token && (token.startsWith('sb_token_') || token.startsWith('sb_auth_token_'))) {
+    localStorage.removeItem('tmb_token');
+    localStorage.removeItem('tmb_user');
+    return null;
+  }
+  return token;
+};
 export const setAuthToken = (token) => {
   if (token) {
     localStorage.setItem('tmb_token', token);
