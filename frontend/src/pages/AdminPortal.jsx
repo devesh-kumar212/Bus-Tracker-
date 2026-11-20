@@ -809,12 +809,12 @@ export default function AdminPortal() {
                       ) : (
                         pendingDrivers.map(d => (
                           <tr key={d.id || d.uid} className="hover:bg-slate-850/30">
-                            <td className="p-4 text-white font-bold">{d.name}</td>
-                            <td className="p-4 font-semibold text-slate-300">{d.email || d.username}</td>
-                            <td className="p-4 text-slate-300">{d.route || 'College → Bus Stand'}</td>
+                            <td className="p-4 text-white font-bold">{d.name}<div className="text-[10px] font-normal text-slate-500">License: {d.licenseNumber || d.license_number || '—'}</div></td>
+                            <td className="p-4 font-semibold text-slate-300">{d.email || d.username}<div className="text-[10px] font-normal text-slate-500">{d.mobile || 'No mobile provided'}</div></td>
+                            <td className="p-4 text-slate-300">{d.route || '—'}</td>
                             <td className="p-4 font-mono font-bold text-cyan-400">{d.busNumber || d.bus_number || '—'}</td>
                             <td className="p-4 text-slate-400">
-                              {d.createdAt ? new Date(d.createdAt).toLocaleDateString() : d.created_at ? new Date(d.created_at).toLocaleDateString() : new Date().toLocaleDateString()}
+                              {d.createdAt ? new Date(d.createdAt).toLocaleDateString() : d.created_at ? new Date(d.created_at).toLocaleDateString() : '—'}
                             </td>
                             <td className="p-4">
                               <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 uppercase tracking-wide">

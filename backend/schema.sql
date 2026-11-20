@@ -8,6 +8,8 @@ CREATE TABLE IF NOT EXISTS users (
     is_approved INTEGER DEFAULT 1,
     bus_number TEXT,
     assigned_route TEXT,
+    mobile TEXT,
+    license_number TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -96,17 +98,6 @@ CREATE TABLE IF NOT EXISTS bus_locations (
 
 CREATE INDEX IF NOT EXISTS idx_bus_locations_status_heartbeat
     ON bus_locations(tracking_status, last_heartbeat_at);
-
--- OTP challenges and one-time signup proofs must survive API restarts.
-CREATE TABLE IF NOT EXISTS email_verifications (
-    email TEXT PRIMARY KEY COLLATE NOCASE,
-    otp_hash TEXT,
-    expires_at INTEGER,
-    attempts INTEGER NOT NULL DEFAULT 0,
-    proof_id TEXT,
-    proof_expires_at INTEGER,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
 
 -- Complaints Table
 CREATE TABLE IF NOT EXISTS complaints (

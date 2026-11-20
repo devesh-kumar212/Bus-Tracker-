@@ -43,12 +43,17 @@ test('authenticated drivers publish independent live bus locations and freshness
   try {
     const driverA = await createDriver('Driver A', 'a@example.test', 'BUS-A', 'Station to College');
     const driverB = await createDriver('Driver B', 'b@example.test', 'BUS-B', 'Market to Bus Stand');
+    await db.run("INSERT INTO buses (bus_number, capacity, status) VALUES ('BUS-A', 40, 'inactive')");
+    await db.run("INSERT INTO routes (route_name, description) VALUES ('Station to College', 'Tracking test route')");
     const passengerToken = jwt.sign({ id: 999, username: 'p@example.test', role: 'passenger' }, JWT_SECRET);
 
     assert.equal((await request('/start', null, {})).response.status, 401, 'tracking start rejects unauthenticated users');
     assert.equal((await request('/start', passengerToken, {})).response.status, 403, 'tracking start rejects passenger tokens');
     assert.equal((await request('/start', driverA.token, {})).response.status, 200);
     assert.equal((await request('/start', driverB.token, {})).response.status, 200);
+    const activeTrip = await db.get("SELECT id FROM trips WHERE driver_id = ? AND status = 'active'", [driverA.id]);
+    assert.ok(activeTrip, 'start tracking opens a matching legacy trip when bus and route records exist');
+    assert.equal((await db.get("SELECT status FROM buses WHERE bus_number = 'BUS-A'")).status, 'active');
 
     const badGps = await request('/location', driverA.token, { latitude: 200, longitude: 74.6 });
     assert.equal(badGps.response.status, 400, 'invalid coordinates are rejected');
@@ -81,6 +86,10 @@ test('authenticated drivers publish independent live bus locations and freshness
 
     const stopped = await request('/stop', driverA.token, {});
     assert.equal(stopped.payload.tracking_status, 'INACTIVE');
+    const completedTrip = await db.get('SELECT status, end_time FROM trips WHERE id = ?', [activeTrip.id]);
+    assert.equal(completedTrip.status, 'completed');
+    assert.ok(completedTrip.end_time, 'stop tracking records the trip end time');
+    assert.equal((await db.get("SELECT status FROM buses WHERE bus_number = 'BUS-A'")).status, 'inactive');
     buses = (await request('/active-buses')).payload;
     assert.equal(buses.find(bus => bus.bus_number === 'BUS-A').status_code, 'OFFLINE');
     assert.equal(buses.find(bus => bus.bus_number === 'BUS-A').latitude, 26.4388, 'offline records retain only the last known coordinates');

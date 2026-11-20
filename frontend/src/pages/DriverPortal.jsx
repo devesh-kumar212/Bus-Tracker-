@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import { getAuthUser } from '../services/api';
 import { getDriverDetails, getDriverTrackingStatus, sendDriverHeartbeat, setDriverTrackingState, saveBusLocationToSupabase, logoutUser } from '../services/authService';
-import { Bus, MapPin, Play, Square, LogOut, CheckCircle2, AlertCircle, Radio, User, Mail, Compass, Navigation, Clock, ShieldCheck } from 'lucide-react';
+import { Bus, MapPin, Play, Square, LogOut, CheckCircle2, AlertCircle, Radio, User, Mail, Compass, Navigation, Clock, ShieldCheck, Phone, CreditCard } from 'lucide-react';
 
 export default function DriverPortal() {
   const navigate = useNavigate();
@@ -151,15 +151,28 @@ export default function DriverPortal() {
     setLoading(true);
     setActionNotice({ type: 'info', text: 'Requesting device GPS location permission...' });
 
+    let trackingStarted = false;
     try {
-      // Set tracking state to active in database & state
+      const firstFix = await new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(
+        resolve, reject, { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 }
+      ));
       await setDriverTrackingState({ user, isTracking: true });
+      trackingStarted = true;
+      const { latitude, longitude, accuracy, speed, heading } = firstFix.coords;
+      const saved = await saveBusLocationToSupabase({ latitude, longitude, accuracy, speed, heading });
       setIsTracking(true);
-
       lastDbUpdateRef.current = 0;
-      setActionNotice({ type: 'info', text: 'Tracking started. Waiting for the first GPS fix…' });
+      setGpsTelemetry({ latitude, longitude, accuracy, speed, heading,
+        timestamp: new Date(saved.location?.updated_at || Date.now()).toLocaleTimeString() });
+      setDatabaseSync('Synced');
+      setActionNotice({ type: 'success', text: 'GPS tracking is active and your first location has been shared.' });
     } catch (err) {
-      setActionNotice({ type: 'error', text: 'Failed to start tracking: ' + err.message });
+      if (trackingStarted) await setDriverTrackingState({ user, isTracking: false }).catch(() => {});
+      const message = err.code === 1 ? 'Allow location access in browser settings, then try again.'
+        : err.code === 2 ? 'GPS is unavailable. Check device location settings and try again.'
+        : err.code === 3 ? 'GPS did not provide a fix in time. Move outdoors and try again.'
+        : err.message;
+      setActionNotice({ type: 'error', text: 'Failed to start tracking: ' + message });
       setIsTracking(false);
     } finally {
       setLoading(false);
@@ -168,6 +181,7 @@ export default function DriverPortal() {
 
   const handleStopTracking = async () => {
     if (!isTracking) return; // Prevent stopping when already stopped
+    if (!window.confirm('Stop sharing this bus location and end the current trip?')) return;
 
     setLoading(true);
 
@@ -344,6 +358,16 @@ export default function DriverPortal() {
                 </div>
 
                 <div className="flex items-center gap-3 p-3 bg-zinc-900/60 rounded-xl border border-zinc-850">
+                  <Phone className="w-4 h-4 text-teal-400 shrink-0" />
+                  <div><div className="text-[10px] text-zinc-500">Mobile Number</div><div className="text-xs font-bold text-white">{driverInfo?.mobile || '-'}</div></div>
+                </div>
+
+                <div className="flex items-center gap-3 p-3 bg-zinc-900/60 rounded-xl border border-zinc-850">
+                  <CreditCard className="w-4 h-4 text-teal-400 shrink-0" />
+                  <div><div className="text-[10px] text-zinc-500">Driver License</div><div className="text-xs font-bold text-white">{driverInfo?.licenseNumber || '-'}</div></div>
+                </div>
+
+                <div className="flex items-center gap-3 p-3 bg-zinc-900/60 rounded-xl border border-zinc-850">
                   <Bus className="w-4 h-4 text-cyan-400 shrink-0" />
                   <div>
                     <div className="text-[10px] text-zinc-500">Assigned Bus Number</div>
@@ -447,6 +471,9 @@ export default function DriverPortal() {
                 </button>
 
               </div>
+              <p className="text-[11px] leading-relaxed text-zinc-500">
+                Keep this page open with location permission enabled. Browsers may pause GPS when the page is closed or suspended.
+              </p>
 
               {/* LOGOUT BUTTON */}
               <button

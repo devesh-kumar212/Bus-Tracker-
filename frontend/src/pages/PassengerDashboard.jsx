@@ -8,6 +8,7 @@ import {
 } from '../services/authService';
 import { fetchRoadRoute, getRouteEndpoints, getRouteStops } from '../services/routingService';
 import { searchPlacesWithNominatim, getRoutePOIs } from '../services/placeService';
+import { submitPassengerComplaint, getAuthUser } from '../services/api';
 import { 
   Bus, 
   MapPin, 
@@ -31,7 +32,9 @@ import {
   Hospital,
   Store,
   GraduationCap,
-  Map as MapIcon
+  Map as MapIcon,
+  MessageSquare,
+  Send
 } from 'lucide-react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -61,6 +64,20 @@ export default function PassengerDashboard() {
   const [placeSearchQuery, setPlaceSearchQuery] = useState('');
   const [placeSearchResults, setPlaceSearchResults] = useState([]);
   const [searchingPlaces, setSearchingPlaces] = useState(false);
+
+  // Passenger Complaint / Issue Reporting Modal State
+  const [showComplaintModal, setShowComplaintModal] = useState(false);
+  const [complaintForm, setComplaintForm] = useState({
+    passenger_name: '',
+    email: '',
+    phone: '',
+    bus_number: '',
+    subject: 'Bus Delay / Late Arrival',
+    description: ''
+  });
+  const [submittingComplaint, setSubmittingComplaint] = useState(false);
+  const [complaintSuccess, setComplaintSuccess] = useState(null);
+  const [complaintError, setComplaintError] = useState(null);
 
   // Leaflet map, polyline, tile layers and markers refs
   const mapContainerRef = useRef(null);
@@ -765,10 +782,6 @@ export default function PassengerDashboard() {
           <div style="font-size: 11px; color: #cbd5e1; margin-bottom: 4px;">
             <strong style="color: #94a3b8;">Route:</strong> ${bus.route}
           </div>
-          <div style="font-size: 11px; color: #cbd5e1; margin-bottom: 8px;">
-            <strong style="color: #94a3b8;">Driver:</strong> ${bus.name || 'Assigned Driver'}
-          </div>
-
           <div style="font-size: 10px; color: #64748b; font-family: monospace; display: flex; align-items: center; justify-content: space-between; border-top: 1px solid #1e293b; padding-top: 6px;">
             <span>Last Updated:</span>
             <strong style="color: #38bdf8;">${getRelativeTime(bus.updated_at)}</strong>
@@ -854,6 +867,69 @@ export default function PassengerDashboard() {
   const activeCount = buses.filter(b => b.status_code === 'LIVE').length;
   const selectedBus = buses.find(b => b.driver_id === selectedBusId);
 
+  const handleOpenComplaintModal = (presetBusNumber = '') => {
+    const authUser = getAuthUser();
+    const busNum = presetBusNumber || (selectedBus ? selectedBus.bus_number : '');
+    setComplaintForm(prev => ({
+      ...prev,
+      passenger_name: authUser?.name || prev.passenger_name || '',
+      email: authUser?.email || prev.email || '',
+      bus_number: busNum || prev.bus_number || ''
+    }));
+    setComplaintSuccess(null);
+    setComplaintError(null);
+    setShowComplaintModal(true);
+  };
+
+  const handleSubmitComplaint = async (e) => {
+    e.preventDefault();
+    setComplaintError(null);
+    setComplaintSuccess(null);
+
+    if (!complaintForm.passenger_name.trim()) {
+      setComplaintError('Please provide your name.');
+      return;
+    }
+    if (!complaintForm.subject.trim()) {
+      setComplaintError('Please select or specify a subject.');
+      return;
+    }
+    if (!complaintForm.description.trim()) {
+      setComplaintError('Please describe the issue or feedback.');
+      return;
+    }
+
+    setSubmittingComplaint(true);
+    try {
+      await submitPassengerComplaint({
+        passenger_name: complaintForm.passenger_name.trim(),
+        email: complaintForm.email.trim() || null,
+        phone: complaintForm.phone.trim() || null,
+        bus_number: complaintForm.bus_number.trim() || null,
+        subject: complaintForm.subject.trim(),
+        description: complaintForm.description.trim()
+      });
+
+      setComplaintSuccess('Your complaint has been submitted successfully! The fleet administrator has been notified.');
+      setTimeout(() => {
+        setShowComplaintModal(false);
+        setComplaintSuccess(null);
+        setComplaintForm({
+          passenger_name: '',
+          email: '',
+          phone: '',
+          bus_number: '',
+          subject: 'Bus Delay / Late Arrival',
+          description: ''
+        });
+      }, 2500);
+    } catch (err) {
+      setComplaintError(err.message || 'Failed to submit complaint. Please try again.');
+    } finally {
+      setSubmittingComplaint(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#080c14] text-zinc-100 flex flex-col justify-between overflow-x-hidden font-sans relative">
       
@@ -900,6 +976,16 @@ export default function PassengerDashboard() {
             >
               <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-emerald-400' : ''}`} />
               <span className="hidden sm:inline">Sync</span>
+            </button>
+
+            {/* Report Issue / Complaint Button */}
+            <button
+              onClick={() => handleOpenComplaintModal()}
+              className="px-3.5 py-2 bg-rose-950/70 hover:bg-rose-900/80 text-rose-200 border border-rose-800/60 rounded-2xl transition-all text-xs font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-rose-950/40"
+              title="File a transit complaint or report an issue"
+            >
+              <MessageSquare className="w-3.5 h-3.5 text-rose-400" />
+              <span>Report Issue</span>
             </button>
           </div>
         </div>
@@ -1102,8 +1188,8 @@ export default function PassengerDashboard() {
 
                       <div className="flex items-center justify-between pt-2 border-t border-zinc-850 text-[11px] text-zinc-400 pl-1">
                         <div className="flex items-center gap-1 text-zinc-400">
-                          <User className="w-3 h-3 text-zinc-500" />
-                          <span className="truncate max-w-[120px]">{bus.name || 'Driver'}</span>
+                          <Bus className="w-3 h-3 text-zinc-500" />
+                          <span className="truncate max-w-[120px]">{bus.route || 'Assigned route'}</span>
                         </div>
 
                         <div className="flex items-center gap-1 font-mono text-[10px] text-zinc-400">
@@ -1193,13 +1279,23 @@ export default function PassengerDashboard() {
                     </div>
                   </div>
 
-                  <button
-                    onClick={handleClearSelectedBus}
-                    className="p-1.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white rounded-xl border border-zinc-700/60 transition-all cursor-pointer"
-                    title="Clear route selection"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => handleOpenComplaintModal(selectedBus.bus_number)}
+                      className="px-2.5 py-1.5 bg-rose-950/60 hover:bg-rose-900/80 text-rose-300 rounded-xl border border-rose-800/60 text-[11px] font-bold flex items-center gap-1.5 transition-all cursor-pointer"
+                      title="Report an issue regarding this bus"
+                    >
+                      <MessageSquare className="w-3 h-3 text-rose-400" />
+                      <span className="hidden sm:inline">Report Bus</span>
+                    </button>
+                    <button
+                      onClick={handleClearSelectedBus}
+                      className="p-1.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white rounded-xl border border-zinc-700/60 transition-all cursor-pointer"
+                      title="Clear route selection"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
 
                 {/* Road Routing Data & Metrics */}
@@ -1243,6 +1339,172 @@ export default function PassengerDashboard() {
           </div>
 
         </div>
+
+        {/* ==================== PASSENGER COMPLAINT & FEEDBACK MODAL ==================== */}
+        {showComplaintModal && (
+          <div className="fixed inset-0 z-[2000] flex items-center justify-center p-4 bg-black/75 backdrop-blur-md animate-fadeIn">
+            <div className="relative w-full max-w-lg bg-[#0c121e] border border-zinc-800 rounded-3xl p-6 sm:p-7 shadow-2xl text-zinc-100 overflow-hidden">
+              <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-rose-500 via-amber-500 to-emerald-500"></div>
+
+              <div className="flex items-center justify-between pb-4 border-b border-zinc-800/80 mb-5">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-rose-950/80 border border-rose-700/60 flex items-center justify-center text-rose-400">
+                    <MessageSquare className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-black text-white">Report Transit Issue / Complaint</h3>
+                    <p className="text-[11px] text-zinc-400">Directly submitted to the City Transit Fleet Administrator</p>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => setShowComplaintModal(false)}
+                  className="p-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white border border-zinc-800 transition-all cursor-pointer"
+                  title="Close"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {complaintSuccess ? (
+                <div className="py-8 flex flex-col items-center text-center space-y-3">
+                  <div className="w-12 h-12 rounded-full bg-emerald-950/80 border border-emerald-500 flex items-center justify-center text-emerald-400 animate-bounce">
+                    <CheckCircle2 className="w-6 h-6" />
+                  </div>
+                  <h4 className="text-sm font-bold text-emerald-300">Complaint Registered!</h4>
+                  <p className="text-xs text-zinc-400 max-w-sm">{complaintSuccess}</p>
+                </div>
+              ) : (
+                <form onSubmit={handleSubmitComplaint} className="space-y-4">
+                  {complaintError && (
+                    <div className="p-3 rounded-xl bg-rose-950/60 border border-rose-800/70 text-rose-300 text-xs flex items-center gap-2">
+                      <AlertCircle className="w-4 h-4 shrink-0" />
+                      <span>{complaintError}</span>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-bold text-zinc-400 uppercase tracking-wider mb-1">
+                        Your Name *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="e.g. Rahul Sharma"
+                        value={complaintForm.passenger_name}
+                        onChange={(e) => setComplaintForm({ ...complaintForm, passenger_name: e.target.value })}
+                        className="w-full px-3 py-2 bg-zinc-950/80 border border-zinc-800 rounded-xl text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-rose-500 transition-colors"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-zinc-400 uppercase tracking-wider mb-1">
+                        Bus Number
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="e.g. BUS-101 / 110"
+                        value={complaintForm.bus_number}
+                        onChange={(e) => setComplaintForm({ ...complaintForm, bus_number: e.target.value })}
+                        className="w-full px-3 py-2 bg-zinc-950/80 border border-zinc-800 rounded-xl text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-rose-500 transition-colors"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-bold text-zinc-400 uppercase tracking-wider mb-1">
+                        Email Address
+                      </label>
+                      <input
+                        type="email"
+                        placeholder="name@example.com"
+                        value={complaintForm.email}
+                        onChange={(e) => setComplaintForm({ ...complaintForm, email: e.target.value })}
+                        className="w-full px-3 py-2 bg-zinc-950/80 border border-zinc-800 rounded-xl text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-rose-500 transition-colors"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-zinc-400 uppercase tracking-wider mb-1">
+                        Phone Number
+                      </label>
+                      <input
+                        type="tel"
+                        placeholder="e.g. 9876543210"
+                        value={complaintForm.phone}
+                        onChange={(e) => setComplaintForm({ ...complaintForm, phone: e.target.value })}
+                        className="w-full px-3 py-2 bg-zinc-950/80 border border-zinc-800 rounded-xl text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-rose-500 transition-colors"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-zinc-400 uppercase tracking-wider mb-1">
+                      Subject / Issue Type *
+                    </label>
+                    <select
+                      value={complaintForm.subject}
+                      onChange={(e) => setComplaintForm({ ...complaintForm, subject: e.target.value })}
+                      className="w-full px-3 py-2 bg-zinc-950/80 border border-zinc-800 rounded-xl text-xs text-white focus:outline-none focus:border-rose-500 transition-colors"
+                    >
+                      <option value="Bus Delay / Late Arrival">Bus Delay / Late Arrival</option>
+                      <option value="Route Deviation / Skipped Stop">Route Deviation / Skipped Stop</option>
+                      <option value="Reckless / Overspeeding Driving">Reckless / Overspeeding Driving</option>
+                      <option value="Overcrowding / Capacity Issue">Overcrowding / Capacity Issue</option>
+                      <option value="Driver / Conductor Misconduct">Driver / Conductor Misconduct</option>
+                      <option value="GPS Signal / Location Inaccurate">GPS Signal / Location Inaccurate</option>
+                      <option value="Lost Property / Baggage">Lost Property / Baggage</option>
+                      <option value="Other Issue">Other Issue</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-zinc-400 uppercase tracking-wider mb-1">
+                      Description *
+                    </label>
+                    <textarea
+                      required
+                      rows={3}
+                      placeholder="Please provide details about what happened, time of incident, stop location..."
+                      value={complaintForm.description}
+                      onChange={(e) => setComplaintForm({ ...complaintForm, description: e.target.value })}
+                      className="w-full px-3 py-2 bg-zinc-950/80 border border-zinc-800 rounded-xl text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-rose-500 transition-colors resize-none"
+                    ></textarea>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-3 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowComplaintModal(false)}
+                      className="px-4 py-2 rounded-xl text-xs font-bold text-zinc-400 hover:text-white hover:bg-zinc-800 transition-all cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={submittingComplaint}
+                      className="px-5 py-2.5 bg-gradient-to-r from-rose-600 to-rose-700 hover:from-rose-500 hover:to-rose-600 text-white rounded-xl text-xs font-extrabold shadow-lg shadow-rose-950/50 transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50"
+                    >
+                      {submittingComplaint ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          <span>Submitting...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Send className="w-3.5 h-3.5" />
+                          <span>Submit Complaint</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+          </div>
+        )}
 
       </main>
 

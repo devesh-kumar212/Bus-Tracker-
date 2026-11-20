@@ -37,7 +37,9 @@ async function initDb() {
   // Migrate existing SQLite installations without dropping driver data.
   for (const statement of [
     'ALTER TABLE users ADD COLUMN bus_number TEXT',
-    'ALTER TABLE users ADD COLUMN assigned_route TEXT'
+    'ALTER TABLE users ADD COLUMN assigned_route TEXT',
+    'ALTER TABLE users ADD COLUMN mobile TEXT',
+    'ALTER TABLE users ADD COLUMN license_number TEXT'
   ]) {
     try { await connection.exec(statement); } catch (error) {
       if (!String(error.message).includes('duplicate column name')) throw error;

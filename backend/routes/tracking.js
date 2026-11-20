@@ -158,6 +158,23 @@ router.post('/start', authenticate, (req, res) => withDriver(req, res, async (db
     ON CONFLICT(driver_id) DO UPDATE SET bus_number = excluded.bus_number, driver_name = excluded.driver_name,
       driver_email = excluded.driver_email, route = excluded.route, tracking_status = 'ACTIVE', last_heartbeat_at = excluded.last_heartbeat_at
   `, [driver.driverId, driver.busNumber, driver.name, driver.email, driver.route, current?.latitude ?? null, current?.longitude ?? null, current?.last_update ?? null, now]);
+  const localDriverId = Number(driver.driverId);
+  if (Number.isSafeInteger(localDriverId)) {
+    try {
+      const currentTrip = await db.get("SELECT id FROM trips WHERE driver_id = ? AND status = 'active'", [localDriverId]);
+      if (!currentTrip) {
+        const bus = await db.get('SELECT id FROM buses WHERE LOWER(bus_number) = LOWER(?)', [driver.busNumber]);
+        const route = await db.get('SELECT id FROM routes WHERE LOWER(route_name) = LOWER(?)', [driver.route]);
+        if (bus && route) {
+          await db.run(`INSERT INTO trips (bus_id, driver_id, route_id, status, start_time)
+            VALUES (?, ?, ?, 'active', ?)`, [bus.id, localDriverId, route.id, now]);
+          await db.run("UPDATE buses SET status = 'active' WHERE id = ?", [bus.id]);
+        }
+      }
+    } catch (error) {
+      console.warn('Could not create the optional trip record for this tracking session:', error.message);
+    }
+  }
   await syncSupabase(identity, token, 'start_bus_tracking');
   const io = req.app.get('io');
   if (io) io.emit('bus_tracking_changed', { driver_id: driver.driverId, tracking_status: 'ACTIVE' });
@@ -218,6 +235,14 @@ router.post('/heartbeat', authenticate, (req, res) => withDriver(req, res, async
 router.post('/stop', authenticate, (req, res) => withDriver(req, res, async (db, driver, identity, token) => {
   const updatedAt = nowIso();
   await db.run("UPDATE bus_locations SET tracking_status = 'INACTIVE', last_heartbeat_at = ? WHERE driver_id = ?", [updatedAt, driver.driverId]);
+  const localDriverId = Number(driver.driverId);
+  if (Number.isSafeInteger(localDriverId)) {
+    const trip = await db.get("SELECT id, bus_id FROM trips WHERE driver_id = ? AND status = 'active'", [localDriverId]);
+    if (trip) {
+      await db.run("UPDATE trips SET status = 'completed', end_time = ?, last_update = ? WHERE id = ?", [updatedAt, updatedAt, trip.id]);
+      await db.run("UPDATE buses SET status = 'inactive' WHERE id = ?", [trip.bus_id]);
+    }
+  }
   await syncSupabase(identity, token, 'stop_bus_tracking');
   const io = req.app.get('io');
   if (io) io.emit('bus_tracking_changed', { driver_id: driver.driverId, tracking_status: 'INACTIVE' });
@@ -233,7 +258,7 @@ router.get('/active-buses', async (req, res) => {
   res.set('Cache-Control', 'no-store, private');
   try {
     const db = await getDb();
-    const rows = await db.all('SELECT driver_id, bus_number, driver_name, route, latitude, longitude, accuracy, speed, heading, tracking_status, last_update, last_heartbeat_at FROM bus_locations ORDER BY bus_number');
+    const rows = await db.all('SELECT driver_id, bus_number, route, latitude, longitude, accuracy, speed, heading, tracking_status, last_update, last_heartbeat_at FROM bus_locations ORDER BY bus_number');
     const now = Date.now();
     const buses = rows.map(bus => {
       const heartbeatAge = bus.last_heartbeat_at ? Math.max(0, now - Date.parse(bus.last_heartbeat_at)) : Infinity;
@@ -242,8 +267,13 @@ router.get('/active-buses', async (req, res) => {
       if (bus.tracking_status === 'ACTIVE' && heartbeatAge <= HEARTBEAT_EXPIRED_MS) {
         status = locationAge <= FRESH_MS ? 'LIVE' : locationAge <= DELAYED_MS ? 'DELAYED' : 'STALE';
       }
-      return { ...bus, is_tracking: status !== 'OFFLINE', status_code: status,
-        status_label: status === 'LIVE' ? 'LIVE' : status === 'DELAYED' ? 'DELAYED' : status === 'STALE' ? 'STALE' : 'OFFLINE' };
+      return {
+        bus_number: bus.bus_number, route: bus.route, latitude: bus.latitude, longitude: bus.longitude,
+        accuracy: bus.accuracy, speed: bus.speed, heading: bus.heading,
+        last_update: bus.last_update, last_heartbeat_at: bus.last_heartbeat_at,
+        is_tracking: status !== 'OFFLINE', status_code: status,
+        status_label: status === 'LIVE' ? 'LIVE' : status === 'DELAYED' ? 'DELAYED' : status === 'STALE' ? 'STALE' : 'OFFLINE'
+      };
     });
     res.json(buses);
   } catch (error) {

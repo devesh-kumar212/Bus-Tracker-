@@ -5,7 +5,8 @@ import {
   sendEmailOtp,
   verifyEmailOtp,
   signUpPassenger,
-  loginUser
+  loginUser,
+  requestPasswordReset
 } from '../services/authService';
 import {
   ArrowLeft,
@@ -90,6 +91,7 @@ export default function AuthPortal() {
   const [canResend, setCanResend] = useState(false);
   const [sendingOtp, setSendingOtp] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [resetSending, setResetSending] = useState(false);
   const [errorMsg, setErrorMsg] = useState(null);
   const [successMsg, setSuccessMsg] = useState(null);
 
@@ -138,10 +140,8 @@ export default function AuthPortal() {
     if (!email || !email.includes('@')) { setErrorMsg('Please enter a valid email address.'); return; }
     setSendingOtp(true);
     try {
-      const result = await sendEmailOtp(email);
-      setSuccessMsg(result.developmentFallback
-        ? `Email delivery is unavailable. Local development verification code: ${result.developmentOtp}`
-        : `OTP sent to ${email.trim()}. Check your inbox.`);
+      await sendEmailOtp(email, { role: 'passenger' });
+      setSuccessMsg(`Supabase accepted the OTP request for ${email.trim()}. Check Inbox and Spam. If no email arrives, the project owner must configure custom SMTP in Supabase Auth settings.`);
       setSignupStep(2); setResendTimer(60); setCanResend(false);
       setOtpDigits(['', '', '', '', '', '']);
       setTimeout(() => digitInputRefs[0].current?.focus(), 300);
@@ -206,6 +206,17 @@ export default function AuthPortal() {
       }
     } catch (err) { setErrorMsg(err.message || 'Login failed. Check your credentials.'); }
     finally { setLoading(false); }
+  };
+
+  const handleForgotPassword = async () => {
+    setErrorMsg(null); setSuccessMsg(null);
+    if (!email.trim().includes('@')) { setErrorMsg('Enter your account email first.'); return; }
+    setResetSending(true);
+    try {
+      await requestPasswordReset(email);
+      setSuccessMsg('Password reset link sent. Check your email inbox and spam folder.');
+    } catch (err) { setErrorMsg(err.message || 'Could not send the password reset link.'); }
+    finally { setResetSending(false); }
   };
 
   /* ── shared input class ───────────────────────────────── */
@@ -401,6 +412,14 @@ export default function AuthPortal() {
                     </label>
                     <input type="password" required placeholder="••••••••" className={inputCls} value={password} onChange={e => setPassword(e.target.value)} />
                   </div>
+                  {config.role === 'driver' && (
+                    <div className="text-right">
+                      <button type="button" onClick={handleForgotPassword} disabled={resetSending}
+                        className="text-xs text-orange-400 hover:text-orange-300 disabled:text-gray-600">
+                        {resetSending ? 'Sending reset link…' : 'Forgot password?'}
+                      </button>
+                    </div>
+                  )}
                   <button type="submit" disabled={loading}
                     className={`w-full py-3 ${config.btnGrad} text-black font-bold rounded-lg text-xs transition-all flex items-center justify-center gap-2 cursor-pointer mt-4 hover:-translate-y-0.5 hover:shadow-lg`}>
                     {loading && <Loader2 className="w-4 h-4 animate-spin" />}

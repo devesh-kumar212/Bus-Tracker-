@@ -7,6 +7,8 @@
 CREATE TABLE IF NOT EXISTS public.profiles (
   id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
   email TEXT NOT NULL,
+  mobile TEXT,
+  license_number TEXT,
   name TEXT NOT NULL,
   role TEXT NOT NULL CHECK (role IN ('passenger', 'driver', 'admin')),
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'pending', 'rejected')),
@@ -31,6 +33,8 @@ CREATE TABLE IF NOT EXISTS public.drivers (
 
 -- Alter table statements if table already exists
 ALTER TABLE public.drivers ADD COLUMN IF NOT EXISTS is_tracking BOOLEAN DEFAULT false;
+ALTER TABLE public.drivers ADD COLUMN IF NOT EXISTS mobile TEXT;
+ALTER TABLE public.drivers ADD COLUMN IF NOT EXISTS license_number TEXT;
 ALTER TABLE public.drivers ADD COLUMN IF NOT EXISTS tracking_status TEXT DEFAULT 'inactive';
 ALTER TABLE public.drivers ADD COLUMN IF NOT EXISTS last_tracking_started_at TIMESTAMP WITH TIME ZONE;
 ALTER TABLE public.drivers ADD COLUMN IF NOT EXISTS last_tracking_stopped_at TIMESTAMP WITH TIME ZONE;
@@ -48,6 +52,10 @@ DECLARE
   account_role TEXT;
   display_name TEXT;
 BEGIN
+  -- Do not publish a pending driver application until Supabase confirms the
+  -- signup email. The update trigger runs again when email_confirmed_at changes.
+  IF NEW.email_confirmed_at IS NULL THEN RETURN NEW; END IF;
+
   account_role := CASE WHEN NEW.raw_user_meta_data->>'role' = 'driver' THEN 'driver' ELSE 'passenger' END;
   display_name := COALESCE(NULLIF(NEW.raw_user_meta_data->>'name', ''), split_part(NEW.email, '@', 1));
 
@@ -59,11 +67,13 @@ BEGIN
     IF NULLIF(NEW.raw_user_meta_data->>'bus_number', '') IS NULL OR NULLIF(NEW.raw_user_meta_data->>'route', '') IS NULL THEN
       RAISE EXCEPTION 'Driver signup requires a bus number and route.' USING ERRCODE = '22023';
     END IF;
-    INSERT INTO public.drivers (user_id, name, email, route, bus_number, approval_status)
-    VALUES (NEW.id, display_name, NEW.email, NEW.raw_user_meta_data->>'route', UPPER(NEW.raw_user_meta_data->>'bus_number'), 'pending')
+    INSERT INTO public.drivers (user_id, name, email, mobile, license_number, route, bus_number, approval_status)
+    VALUES (NEW.id, display_name, NEW.email, NEW.raw_user_meta_data->>'mobile', NEW.raw_user_meta_data->>'license_number', NEW.raw_user_meta_data->>'route', UPPER(NEW.raw_user_meta_data->>'bus_number'), 'pending')
     ON CONFLICT (user_id) DO UPDATE SET name = EXCLUDED.name, email = EXCLUDED.email,
+      mobile = EXCLUDED.mobile, license_number = EXCLUDED.license_number,
       route = EXCLUDED.route, bus_number = EXCLUDED.bus_number;
   END IF;
+
   RETURN NEW;
 END;
 $$;
@@ -71,6 +81,10 @@ $$;
 DROP TRIGGER IF EXISTS on_trackmybus_auth_signup ON auth.users;
 CREATE TRIGGER on_trackmybus_auth_signup
   AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.handle_trackmybus_auth_signup();
+DROP TRIGGER IF EXISTS on_trackmybus_auth_profile_update ON auth.users;
+CREATE TRIGGER on_trackmybus_auth_profile_update
+  AFTER UPDATE OF email, raw_user_meta_data, email_confirmed_at ON auth.users
   FOR EACH ROW EXECUTE FUNCTION public.handle_trackmybus_auth_signup();
 
 -- 3. Enable Row Level Security (RLS)

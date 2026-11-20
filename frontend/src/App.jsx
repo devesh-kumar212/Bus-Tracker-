@@ -7,6 +7,7 @@ import AdminPortal from './pages/AdminPortal';
 import DriverRegister from './pages/DriverRegister';
 import DriverPending from './pages/DriverPending';
 import DriverRejected from './pages/DriverRejected';
+import ResetPassword from './pages/ResetPassword';
 
 import PassengerErrorBoundary from './components/PassengerErrorBoundary';
 
@@ -19,6 +20,7 @@ export default function App() {
         {/* Authentication Portals */}
         <Route path="/driver-login" element={<AuthPortal />} />
         <Route path="/driver-register" element={<DriverRegister />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/passenger-login" element={<AuthPortal />} />
         <Route path="/admin-login" element={<AuthPortal />} />
 

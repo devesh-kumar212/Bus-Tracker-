@@ -77,7 +77,7 @@ router.delete('/buses/:id', async (req, res) => {
 router.get('/drivers', async (req, res) => {
   try {
     const db = await getDb();
-    const drivers = await db.all('SELECT id, name, username, created_at FROM users WHERE role = "driver" ORDER BY name');
+    const drivers = await db.all('SELECT id, name, username, mobile, license_number, created_at FROM users WHERE role = "driver" ORDER BY name');
     res.json(drivers);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -284,7 +284,7 @@ router.get('/active-trips', async (req, res) => {
 router.get('/pending-drivers', async (req, res) => {
   try {
     const db = await getDb();
-    const pendingDrivers = await db.all("SELECT id, name, username, bus_number, assigned_route, created_at FROM users WHERE role = 'driver' AND is_approved = 0 ORDER BY created_at DESC");
+    const pendingDrivers = await db.all("SELECT id, name, username, bus_number, assigned_route, mobile, license_number, created_at FROM users WHERE role = 'driver' AND is_approved = 0 ORDER BY created_at DESC");
     res.json(pendingDrivers);
   } catch (error) {
     res.status(500).json({ error: error.message });

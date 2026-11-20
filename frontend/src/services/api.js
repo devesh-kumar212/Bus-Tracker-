@@ -65,6 +65,14 @@ export async function apiRequest(endpoint, options = {}) {
   return data;
 }
 
+// Passenger Complaints API
+export async function submitPassengerComplaint(complaintData) {
+  return apiRequest('/passenger/complaints', {
+    method: 'POST',
+    body: JSON.stringify(complaintData)
+  });
+}
+
 // Socket Connection Manager
 let socket = null;
 

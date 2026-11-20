@@ -2,7 +2,6 @@ const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const crypto = require('crypto');
 const { getDb } = require('../db');
 
 const nodemailer = require('nodemailer');
@@ -13,19 +12,11 @@ if (process.env.NODE_ENV === 'production' && (!process.env.JWT_SECRET || process
 }
 const JWT_SECRET = process.env.JWT_SECRET || DEVELOPMENT_JWT_SECRET;
 
-const otpRequestWindows = new Map();
-
-function hashOtp(email, otp) {
-  return crypto.createHmac('sha256', JWT_SECRET).update(`${email}:${otp}`).digest('hex');
-}
-
-function reserveOtpRequest(key) {
-  const now = Date.now();
-  const history = (otpRequestWindows.get(key) || []).filter(time => now - time < 15 * 60 * 1000);
-  if (history.length >= 5 || (history.length > 0 && now - history[history.length - 1] < 60 * 1000)) return false;
-  history.push(now);
-  otpRequestWindows.set(key, history);
-  return true;
+function normalizeMobile(value) {
+  const digits = String(value || '').replace(/\D/g, '');
+  if (digits.length === 10) return `+91${digits}`;
+  if (digits.length === 12 && digits.startsWith('91')) return `+${digits}`;
+  return String(value || '').trim().startsWith('+') ? `+${digits}` : digits;
 }
 
 async function getTransporter() {
@@ -45,138 +36,6 @@ function escapeHtml(value) {
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   })[character]);
 }
-// POST /send-otp - Generate & send 6-digit OTP code to driver email
-router.post('/send-otp', async (req, res) => {
-  const { email } = req.body;
-  if (!email || !email.includes('@')) {
-    return res.status(400).json({ error: 'A valid email address is required.' });
-  }
-
-  const normalizedEmail = email.trim().toLowerCase();
-  if (!reserveOtpRequest(`email:${normalizedEmail}`) || !reserveOtpRequest(`ip:${req.ip}`)) {
-    return res.status(429).json({ error: 'Too many verification code requests. Please wait before trying again.' });
-  }
-
-  // Persist only a keyed hash so challenges survive an API restart without
-  // storing the raw verification code in the database.
-  const code = crypto.randomInt(100000, 1000000).toString();
-  const expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes expiry
-  try {
-    const db = await getDb();
-    await db.run(`
-      INSERT INTO email_verifications (email, otp_hash, expires_at, attempts, proof_id, proof_expires_at, updated_at)
-      VALUES (?, ?, ?, 0, NULL, NULL, ?)
-      ON CONFLICT(email) DO UPDATE SET otp_hash = excluded.otp_hash, expires_at = excluded.expires_at,
-        attempts = 0, proof_id = NULL, proof_expires_at = NULL, updated_at = excluded.updated_at
-    `, [normalizedEmail, hashOtp(normalizedEmail, code), expiresAt, new Date().toISOString()]);
-  } catch (error) {
-    console.error('Could not store OTP challenge:', error.message);
-    return res.status(503).json({ error: 'Verification service is temporarily unavailable. Please try again.' });
-  }
-
-  const mailOptions = {
-    from: process.env.SMTP_FROM || '"TrackMyBus Verification" <no-reply@trackmybus.com>',
-    to: normalizedEmail,
-    subject: 'Ã°Å¸Å¡Å’ Your Driver Registration Verification Code',
-    text: `Hello,\n\nYour 6-digit email verification code for TrackMyBus Driver Registration is:\n\n   ${code}\n\nThis code will expire in 5 minutes. Please enter this code on the registration page to complete your application.\n\nThank you,\nTrackMyBus Team`,
-    html: `
-      <div style="font-family: Arial, sans-serif; background-color: #0f172a; color: #f8fafc; padding: 24px; border-radius: 12px;">
-        <h2 style="color: #38bdf8; margin-bottom: 12px;">Ã°Å¸Å¡Å’ TrackMyBus Driver Registration</h2>
-        <p style="font-size: 14px; color: #94a3b8;">Your 6-digit email verification OTP code is:</p>
-        <div style="background-color: #1e293b; border: 1px solid #3b82f6; color: #60a5fa; font-size: 28px; font-weight: bold; letter-spacing: 6px; padding: 16px; text-align: center; border-radius: 8px; margin: 16px 0;">
-          ${code}
-        </div>
-        <p style="font-size: 12px; color: #64748b;">This code expires in 5 minutes. If you did not request this, please ignore this email.</p>
-      </div>
-    `
-  };
-
-  try {
-    const activeTransporter = await getTransporter();
-    if (!activeTransporter) throw new Error('SMTP_HOST, SMTP_USER, and SMTP_PASS are not configured.');
-    const info = await activeTransporter.sendMail(mailOptions);
-
-    const previewUrl = nodemailer.getTestMessageUrl(info);
-    if (previewUrl) {
-      console.log(`\nÃ°Å¸â€œÂ¬ REAL EMAIL DELIVERED! VIEW ONLINE INBOX HERE:\n   Ã°Å¸â€˜â€° ${previewUrl}\n`);
-    }
-
-    res.json({
-      success: true,
-      message: `Verification OTP code sent to ${normalizedEmail}`,
-      previewUrl: previewUrl || null
-    });
-  } catch (err) {
-    // The local SMTP relay may be unreachable during development. Keep a
-    // development-only fallback, and never expose verification codes in prod.
-    if (process.env.NODE_ENV !== 'production' && process.env.OTP_ALLOW_DEV_FALLBACK !== 'false') {
-      console.warn(`OTP email delivery failed for ${normalizedEmail}; using development-only fallback: ${err.message}`);
-      return res.json({
-        success: true,
-        developmentFallback: true,
-        developmentOtp: code,
-        message: 'Email could not be delivered. Use the development verification code shown on this page.'
-      });
-    }
-    console.error('Error sending OTP email:', err.message);
-    try { await (await getDb()).run('DELETE FROM email_verifications WHERE email = ?', [normalizedEmail]); } catch (_) {}
-    res.status(502).json({ error: 'OTP email could not be delivered. Check the SMTP host, port, and credentials.' });
-  }
-});
-
-// POST /verify-otp - Validate entered OTP code
-router.post('/verify-otp', async (req, res) => {
-  const { email, otp } = req.body;
-
-  if (!email || !otp) {
-    return res.status(400).json({ error: 'Email and OTP code are required.' });
-  }
-
-  const normalizedEmail = email.trim().toLowerCase();
-  let db;
-  let record;
-  try {
-    db = await getDb();
-    record = await db.get('SELECT * FROM email_verifications WHERE email = ?', [normalizedEmail]);
-  }
-  catch (error) { return res.status(503).json({ error: 'Verification service is temporarily unavailable.' }); }
-
-  if (!record) {
-    return res.status(400).json({ error: 'No OTP requested for this email address or it has expired.' });
-  }
-
-  if (Date.now() > record.expires_at || !record.otp_hash) {
-    try { await db.run('DELETE FROM email_verifications WHERE email = ?', [normalizedEmail]); }
-    catch (_) { return res.status(503).json({ error: 'Verification service is temporarily unavailable.' }); }
-    return res.status(400).json({ error: 'OTP code has expired. Please request a new code.' });
-  }
-
-  const expectedHash = Buffer.from(record.otp_hash, 'hex');
-  const actualHash = Buffer.from(hashOtp(normalizedEmail, String(otp).trim()), 'hex');
-  if (expectedHash.length !== actualHash.length || !crypto.timingSafeEqual(expectedHash, actualHash)) {
-    const attempts = (record.attempts || 0) + 1;
-    if (attempts >= 5) {
-      try { await db.run('DELETE FROM email_verifications WHERE email = ?', [normalizedEmail]); }
-      catch (_) { return res.status(503).json({ error: 'Verification service is temporarily unavailable.' }); }
-      return res.status(429).json({ error: 'Too many incorrect codes. Request a new verification code.' });
-    }
-    try { await db.run('UPDATE email_verifications SET attempts = ? WHERE email = ?', [attempts, normalizedEmail]); }
-    catch (_) { return res.status(503).json({ error: 'Verification service is temporarily unavailable.' }); }
-    return res.status(400).json({ error: 'Invalid OTP code. Please check and try again.' });
-  }
-
-  // Replace the code with a single-use signup proof in persistent storage.
-  const proofId = crypto.randomBytes(24).toString('hex');
-  const expiresAt = Date.now() + 10 * 60 * 1000;
-  try {
-    await db.run(`UPDATE email_verifications SET otp_hash = NULL, expires_at = NULL,
-      proof_id = ?, proof_expires_at = ?, updated_at = ? WHERE email = ?`,
-    [proofId, expiresAt, new Date().toISOString(), normalizedEmail]);
-  } catch (_) { return res.status(503).json({ error: 'Verification service is temporarily unavailable.' }); }
-  const verificationToken = jwt.sign({ purpose: 'driver_signup_otp', email: normalizedEmail, proofId }, JWT_SECRET, { expiresIn: '10m' });
-  res.json({ success: true, message: 'Email address verified successfully.', verificationToken });
-});
-
 // Middleware to verify JWT token
 async function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
@@ -267,7 +126,8 @@ router.post('/login', async (req, res) => {
   try {
     const db = await getDb();
     const normalizedUsername = String(username).trim().toLowerCase();
-    const user = await db.get('SELECT * FROM users WHERE LOWER(username) = ?', [normalizedUsername]);
+    const normalizedPhone = normalizeMobile(username);
+    const user = await db.get('SELECT * FROM users WHERE LOWER(username) = ? OR mobile = ?', [normalizedUsername, normalizedPhone]);
 
     if (!user) {
       return res.status(401).json({ error: 'Invalid credentials' });
@@ -297,7 +157,9 @@ router.post('/login', async (req, res) => {
         name: user.name,
         role: user.role,
         is_approved: user.is_approved,
-        status: user.is_approved === 1 ? 'approved' : 'pending'
+        status: user.is_approved === 1 ? 'approved' : 'pending',
+        mobile: user.mobile,
+        license_number: user.license_number
       }
     });
   } catch (error) {
@@ -307,9 +169,15 @@ router.post('/login', async (req, res) => {
 });
 
 // GET /driver-status - Check real-time driver approval status from SQLite
-router.get('/driver-status', async (req, res) => {
+router.get('/driver-status', authenticateToken, async (req, res) => {
   const email = (req.query.email || req.query.username || '').trim().toLowerCase();
   const id = req.query.id;
+
+  if (req.user.role !== 'driver' ||
+      (email && email !== String(req.user.username || '').toLowerCase() && String(id || '') !== String(req.user.id)) ||
+      (!email && String(id || '') !== String(req.user.id))) {
+    return res.status(403).json({ error: 'You can only view your own driver status.' });
+  }
 
   if (!email && !id) {
     return res.status(400).json({ error: 'Email or ID is required' });
@@ -352,64 +220,92 @@ router.get('/driver-status', async (req, res) => {
   }
 });
 
-// POST driver signup (creates a pending driver request)
+// POST driver signup after Supabase Auth has confirmed the signup email.
 router.post('/driver-signup', async (req, res) => {
-  const { name, username, password, busNumber, route, verificationToken } = req.body;
+  const { name, username, password, busNumber, route, mobile, licenseNumber } = req.body || {};
   const normalizedEmail = typeof username === 'string' ? username.trim().toLowerCase() : '';
-
-  if (!name?.trim() || !normalizedEmail.includes('@') || !password || password.length < 6 || !busNumber?.trim() || !route?.trim() || !verificationToken) {
-    return res.status(400).json({ error: 'Name, valid email, password (at least 6 characters), bus, route, and verified email are required.' });
+  const normalizedMobile = normalizeMobile(mobile);
+  const normalizedLicense = typeof licenseNumber === 'string' ? licenseNumber.trim().toUpperCase() : '';
+  const token = (req.headers.authorization || '').startsWith('Bearer ')
+    ? req.headers.authorization.slice(7) : '';
+  if (!token) return res.status(401).json({ error: 'A verified Supabase email session is required.' });
+  if (!name?.trim() || !normalizedEmail.includes('@') || !password || password.length < 8 ||
+      !/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/\d/.test(password) ||
+      !/^\+?[1-9]\d{7,14}$/.test(normalizedMobile) || normalizedLicense.length < 5 || normalizedLicense.length > 30 ||
+      !busNumber?.trim() || !route?.trim()) {
+    return res.status(400).json({ error: 'Name, verified email session, strong password, mobile, license number, bus and route are required.' });
   }
 
-  let proof;
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+  const anonKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+  if (!supabaseUrl || !anonKey) return res.status(503).json({ error: 'Supabase Auth verification is not configured on the server.' });
+  let authUser;
   try {
-    proof = jwt.verify(verificationToken, JWT_SECRET);
-  } catch (_) {
-    return res.status(401).json({ error: 'Email verification expired. Request a new code.' });
+    const response = await fetch(`${supabaseUrl.replace(/\/$/, '')}/auth/v1/user`, {
+      headers: { apikey: anonKey, Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(8000)
+    });
+    if (!response.ok) return res.status(401).json({ error: 'Confirm the signup email and reopen the confirmation link before registering.' });
+    authUser = await response.json();
+  } catch (error) {
+    console.error('Supabase signup session verification failed:', error.message);
+    return res.status(503).json({ error: 'Could not verify the Supabase signup session.' });
   }
-  let storedProof;
+  if (authUser.email?.trim().toLowerCase() !== normalizedEmail || !authUser.email_confirmed_at) {
+    return res.status(401).json({ error: 'A verified Supabase email session matching this application is required.' });
+  }
   try {
-    storedProof = await (await getDb()).get(
-      'SELECT proof_id, proof_expires_at FROM email_verifications WHERE email = ?', [normalizedEmail]
-    );
-  } catch (_) {
-    return res.status(503).json({ error: 'Verification service is temporarily unavailable. Please try again.' });
-  }
-  if (proof.purpose !== 'driver_signup_otp' || proof.email !== normalizedEmail || !storedProof ||
-      storedProof.proof_id !== proof.proofId || storedProof.proof_expires_at < Date.now()) {
-    return res.status(401).json({ error: 'Email verification is invalid or has already been used.' });
+    const baseUrl = supabaseUrl.replace(/\/$/, '');
+    const headers = { apikey: anonKey, Authorization: `Bearer ${token}` };
+    const profileQuery = new URLSearchParams({ select: 'role,status', id: `eq.${authUser.id}` });
+    const driverQuery = new URLSearchParams({ select: 'user_id', user_id: `eq.${authUser.id}` });
+    const [profileResponse, driverResponse] = await Promise.all([
+      fetch(`${baseUrl}/rest/v1/profiles?${profileQuery}`, { headers, signal: AbortSignal.timeout(8000) }),
+      fetch(`${baseUrl}/rest/v1/drivers?${driverQuery}`, { headers, signal: AbortSignal.timeout(8000) })
+    ]);
+    if (!profileResponse.ok || !driverResponse.ok) throw new Error('Could not read verified driver application records.');
+    const [profiles, driverRows] = await Promise.all([profileResponse.json(), driverResponse.json()]);
+    if (profiles?.[0]?.role !== 'driver' || !driverRows?.[0]) {
+      return res.status(403).json({ error: 'Apply through the verified driver registration flow first.' });
+    }
+  } catch (error) {
+    console.error('Supabase driver application lookup failed:', error.message);
+    return res.status(503).json({ error: 'Could not verify the Supabase driver application. Check the database migration and retry.' });
   }
 
   try {
     const db = await getDb();
-    const consumedProof = await db.run(`UPDATE email_verifications SET proof_id = NULL, proof_expires_at = NULL,
-      updated_at = ? WHERE email = ? AND proof_id = ? AND proof_expires_at >= ?`,
-    [new Date().toISOString(), normalizedEmail, proof.proofId, Date.now()]);
-    if (!consumedProof.changes) {
-      return res.status(401).json({ error: 'Email verification expired or has already been used. Request a new code.' });
-    }
-    const existingUser = await db.get("SELECT id FROM users WHERE LOWER(username) = LOWER(?)", [normalizedEmail]);
+    const existingUser = await db.get("SELECT id, role, is_approved FROM users WHERE LOWER(username) = LOWER(?)", [normalizedEmail]);
     if (existingUser) {
-      return res.status(400).json({ error: 'Username is already registered.' });
+      if (existingUser.role !== 'driver' || existingUser.is_approved === 1) {
+        return res.status(409).json({ error: 'An account already exists with this email. Please sign in or contact the administrator.' });
+      }
+      const duplicateContact = await db.get(
+        'SELECT id FROM users WHERE id != ? AND (mobile = ? OR UPPER(license_number) = ?)',
+        [existingUser.id, normalizedMobile, normalizedLicense]
+      );
+      if (duplicateContact) return res.status(409).json({ error: 'This mobile or license number is already registered to another driver.' });
+      const hashedPassword = await bcrypt.hash(password, 12);
+      await db.run(`UPDATE users SET name = ?, password = ?, bus_number = ?, assigned_route = ?, mobile = ?, license_number = ?
+        WHERE id = ? AND role = 'driver' AND is_approved = 0`,
+      [name.trim(), hashedPassword, busNumber.trim().toUpperCase(), route.trim(), normalizedMobile, normalizedLicense, existingUser.id]);
+      return res.status(200).json({ success: true, alreadySubmitted: true, message: 'Your pending driver application has been updated.' });
     }
-
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
-
-    // Insert as pending driver (is_approved = 0)
-    await db.run(
-      'INSERT INTO users (name, username, password, role, is_approved, bus_number, assigned_route) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [name.trim(), normalizedEmail, hashedPassword, 'driver', 0, busNumber.trim(), route.trim()]
+    const duplicateContact = await db.get(
+      'SELECT id FROM users WHERE mobile = ? OR UPPER(license_number) = ?', [normalizedMobile, normalizedLicense]
     );
-
-    await db.run('DELETE FROM email_verifications WHERE email = ?', [normalizedEmail]);
+    if (duplicateContact) return res.status(409).json({ error: 'This mobile or license number is already registered to another driver.' });
+    const hashedPassword = await bcrypt.hash(password, 12);
+    await db.run(`INSERT INTO users
+      (name, username, password, role, is_approved, bus_number, assigned_route, mobile, license_number)
+      VALUES (?, ?, ?, 'driver', 0, ?, ?, ?, ?)`,
+    [name.trim(), normalizedEmail, hashedPassword, busNumber.trim().toUpperCase(), route.trim(), normalizedMobile, normalizedLicense]);
     res.status(201).json({ success: true, message: 'Driver registration request submitted for admin approval.' });
   } catch (error) {
     console.error('Driver signup error:', error);
-    res.status(500).json({ error: 'Server error during registration request' });
+    res.status(500).json({ error: 'Server error during registration request.' });
   }
 });
-
 // POST /send-approval-email - Send official approval email to driver
 router.post('/send-approval-email', authenticateToken, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin permission required.' });

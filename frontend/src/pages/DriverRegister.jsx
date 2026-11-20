@@ -1,8 +1,8 @@
-import { useState, useEffect, useRef } from 'react';
+﻿import { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import { sendEmailOtp, verifyEmailOtp, signUpDriver } from '../services/authService';
-import { 
+import {
   ArrowLeft, 
   Loader2, 
   Lock, 
@@ -13,29 +13,31 @@ import {
   Bus, 
   MapPin, 
   MailCheck, 
-  KeyRound, 
-  RefreshCw
+  RefreshCw,
+  Phone,
+  CreditCard
 } from 'lucide-react';
 
 export default function DriverRegister() {
   const navigate = useNavigate();
 
-  // Wizard Step: 1 = Details, 2 = Email OTP Verification
+  // Wizard Step: 1 = Details, 2 = Email OTP verification
   const [step, setStep] = useState(1);
+  const [otpVerified, setOtpVerified] = useState(false);
 
   // Form fields
   const [fullName, setFullName] = useState('');
+  const [mobile, setMobile] = useState('');
   const [email, setEmail] = useState('');
+  const [licenseNumber, setLicenseNumber] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [otpDigits, setOtpDigits] = useState(['', '', '', '', '', '']);
+  const digitInputRefs = [useRef(), useRef(), useRef(), useRef(), useRef(), useRef()];
   const [route, setRoute] = useState('');
   const [busNumber, setBusNumber] = useState('');
 
-  // Interactive OTP 6-Digit Array State
-  const [otpDigits, setOtpDigits] = useState(['', '', '', '', '', '']);
-  const digitInputRefs = [useRef(), useRef(), useRef(), useRef(), useRef(), useRef()];
-
-  // Resend Countdown Timer (60s)
+  // Confirmation email resend cooldown.
   const [resendTimer, setResendTimer] = useState(60);
   const [canResend, setCanResend] = useState(false);
 
@@ -58,131 +60,100 @@ export default function DriverRegister() {
     return () => clearInterval(interval);
   }, [step, resendTimer]);
 
-  // Handle digit box changes
   const handleDigitChange = (index, value) => {
     if (!/^\d*$/.test(value)) return;
-
     if (value.length > 1) {
       const pastedDigits = value.slice(0, 6).split('');
       setOtpDigits([...pastedDigits, ...Array(6 - pastedDigits.length).fill('')]);
       digitInputRefs[Math.min(pastedDigits.length, 5)].current?.focus();
       return;
     }
-
-    const newDigits = [...otpDigits];
-    newDigits[index] = value.slice(-1);
-    setOtpDigits(newDigits);
-
-    if (value && index < 5) {
-      digitInputRefs[index + 1].current?.focus();
-    }
+    const nextDigits = [...otpDigits];
+    nextDigits[index] = value.slice(-1);
+    setOtpDigits(nextDigits);
+    if (value && index < 5) digitInputRefs[index + 1].current?.focus();
   };
 
-  const handleKeyDown = (index, e) => {
-    if (e.key === 'Backspace' && !otpDigits[index] && index > 0) {
-      digitInputRefs[index - 1].current?.focus();
-    }
+  const handleKeyDown = (index, event) => {
+    if (event.key === 'Backspace' && !otpDigits[index] && index > 0) digitInputRefs[index - 1].current?.focus();
   };
 
-  const handlePaste = (e) => {
-    e.preventDefault();
-    const pastedData = e.clipboardData.getData('text').trim().replace(/\D/g, '').slice(0, 6);
-    if (pastedData.length === 6) {
-      setOtpDigits(pastedData.split(''));
+  const handlePaste = (event) => {
+    event.preventDefault();
+    const pastedDigits = event.clipboardData.getData('text').replace(/\D/g, '').slice(0, 6);
+    if (pastedDigits.length === 6) {
+      setOtpDigits(pastedDigits.split(''));
       digitInputRefs[5].current?.focus();
     }
   };
 
-  // Step 1: Send OTP to Driver Email
-  const handleSendOtp = async (e) => {
-    if (e) e.preventDefault();
+  // Request the email OTP for driver registration.
+  const handleSendOtp = async (event) => {
+    if (event) event.preventDefault();
     setErrorMsg(null);
     setSuccessMsg(null);
-
-    // Form validations
     if (!fullName.trim() || !email.trim() || !password || !confirmPassword || !route.trim() || !busNumber.trim()) {
-      setErrorMsg('Please fill out all required fields.');
-      return;
+      setErrorMsg('Please fill out all required fields.'); return;
     }
-
-    if (password !== confirmPassword) {
-      setErrorMsg('Passwords do not match. Please re-enter your password.');
-      return;
+    if (!/^[^\s@]+@gmail\.com$/i.test(email.trim())) {
+      setErrorMsg('Enter the driver’s Gmail address (name@gmail.com) to receive the OTP in Gmail.'); return;
     }
-
-    if (password.length < 6) {
-      setErrorMsg('Password must be at least 6 characters long.');
-      return;
+    if (password !== confirmPassword) { setErrorMsg('Passwords do not match. Please re-enter your password.'); return; }
+    if (password.length < 8 || !/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/\d/.test(password)) {
+      setErrorMsg('Use at least 8 characters with an uppercase letter, lowercase letter, and number.'); return;
     }
+    if (!/^\+?[1-9]\d{7,14}$/.test(mobile.replace(/[\s()-]/g, ''))) {
+      setErrorMsg('Enter a valid mobile number with country code if needed.'); return;
+    }
+    if (!licenseNumber.trim()) { setErrorMsg('Enter your driver license number.'); return; }
 
     setSendingOtp(true);
-
     try {
-      const otpResult = await sendEmailOtp(email);
-
-      setSuccessMsg(otpResult.developmentFallback
-        ? `Email service is unavailable. Local development verification code: ${otpResult.developmentOtp}`
-        : `Verification 6-digit OTP code sent to ${email.trim()}. Check your email inbox.`);
+      await sendEmailOtp(email, {
+        role: 'driver', name: fullName.trim(), mobile: mobile.trim(), license_number: licenseNumber.trim(),
+        route: route.trim(), bus_number: busNumber.trim().toUpperCase()
+      });
       setStep(2);
+      setOtpVerified(false);
       setResendTimer(60);
       setCanResend(false);
       setOtpDigits(['', '', '', '', '', '']);
-
-      setTimeout(() => {
-        digitInputRefs[0].current?.focus();
-      }, 300);
-
+      setSuccessMsg(`A 6-digit verification code was requested for ${email.trim()}. Check that Gmail inbox and Spam.`);
+      setTimeout(() => digitInputRefs[0].current?.focus(), 300);
     } catch (err) {
-      setErrorMsg(err.message || 'Error sending verification OTP email.');
-    } finally {
-      setSendingOtp(false);
-    }
+      const message = typeof err?.message === 'string' ? err.message.trim() : '';
+      setErrorMsg(message && message !== '{}' ? message : 'Could not send the OTP. Check Supabase Auth logs and SMTP settings.');
+    } finally { setSendingOtp(false); }
   };
 
-  // Step 2: Verify OTP & Complete Driver Registration in Supabase Auth & DB
-  const handleVerifyOtpAndRegister = async (e) => {
-    e.preventDefault();
+  // Verify the OTP before creating the pending driver application.
+  const handleVerifyOtpAndRegister = async (event) => {
+    event.preventDefault();
     setErrorMsg(null);
     setSuccessMsg(null);
-
     const fullOtp = otpDigits.join('');
-
-    if (fullOtp.length !== 6) {
-      setErrorMsg('Please enter the full 6-digit OTP code.');
-      return;
+    if (!otpVerified && !/^\d{6}$/.test(fullOtp)) { setErrorMsg('Enter the complete 6-digit OTP from Gmail.'); return; }
+    if (otpVerified && (!password || password !== confirmPassword)) { setErrorMsg('Enter and confirm the password for your driver account.'); return; }
+    if (otpVerified && (password.length < 8 || !/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/\d/.test(password))) {
+      setErrorMsg('Use at least 8 characters with an uppercase letter, lowercase letter, and number.'); return;
     }
-
     setLoading(true);
-
     try {
-      // 1. Verify OTP with backend Gmail service
-      const verification = await verifyEmailOtp(email, fullOtp);
-
-      // 2. Register Driver in Supabase Auth & create profiles + drivers records with status: "pending"
+      if (!otpVerified) {
+        await verifyEmailOtp(email, fullOtp);
+        setOtpVerified(true);
+      }
       await signUpDriver({
-        name: fullName.trim(),
-        email: email.trim().toLowerCase(),
-        password,
-        route: route.trim(),
-        busNumber: busNumber.trim().toUpperCase(),
-        verificationToken: verification.verificationToken
+        name: fullName.trim(), mobile: mobile.trim(), licenseNumber: licenseNumber.trim(),
+        email: email.trim().toLowerCase(), password, route: route.trim(), busNumber: busNumber.trim().toUpperCase()
       });
-
-      // 3. Show required success banner
       setSuccessMsg('Your registration request has been submitted. Please wait for admin approval.');
-
-      // 4. Redirect to Pending Approval page
-      setTimeout(() => {
-        navigate('/driver/pending');
-      }, 1500);
-
+      setTimeout(() => navigate('/driver/pending'), 1500);
     } catch (err) {
-      setErrorMsg(err.message || 'Verification or registration failed. Please try again.');
-    } finally {
-      setLoading(false);
-    }
+      const message = typeof err?.message === 'string' ? err.message.trim() : '';
+      setErrorMsg(message && message !== '{}' ? message : 'OTP verification or registration failed. Check Supabase Auth and API logs.');
+    } finally { setLoading(false); }
   };
-
   return (
     <div className="min-h-screen bg-[#080c14] text-zinc-100 flex flex-col justify-between overflow-x-hidden font-sans relative">
       <div className="absolute top-[15%] left-[5%] w-[45%] h-[45%] bg-emerald-500/10 rounded-full blur-[160px] pointer-events-none"></div>
@@ -209,16 +180,17 @@ export default function DriverRegister() {
               {/* Interactive Step Indicator Header */}
               <div className="flex items-center justify-between mb-6 pb-4 border-b border-zinc-800/80">
                 <button
-                  onClick={() => step === 2 ? setStep(1) : navigate('/driver-login')}
-                  className="flex items-center gap-1.5 text-xs text-zinc-400 hover:text-white transition-colors duration-200 cursor-pointer"
+                  onClick={() => step === 1 && navigate('/driver-login')}
+                  disabled={step === 2}
+                  className="flex items-center gap-1.5 text-xs text-zinc-400 hover:text-white transition-colors duration-200 disabled:cursor-default"
                 >
                   <ArrowLeft className="w-4 h-4" />
-                  <span>{step === 2 ? 'Back to Details' : 'Back to Login'}</span>
+                  <span>{step === 2 ? (otpVerified ? 'Email verified' : 'OTP pending') : 'Back to Login'}</span>
                 </button>
 
                 <div className="flex items-center gap-2">
                   <span className={`w-6 h-6 rounded-full text-[10px] font-bold flex items-center justify-center ${step === 1 ? 'bg-emerald-500 text-zinc-950' : 'bg-teal-500 text-zinc-950'}`}>
-                    {step === 1 ? '1' : '✓'}
+                    {step === 1 ? '1' : '2'}
                   </span>
                   <div className="w-4 h-[1px] bg-zinc-800"></div>
                   <span className={`w-6 h-6 rounded-full text-[10px] font-bold flex items-center justify-center ${step === 2 ? 'bg-emerald-500 text-zinc-950' : 'bg-zinc-800 text-zinc-500'}`}>
@@ -229,7 +201,7 @@ export default function DriverRegister() {
 
               {/* Title Header */}
               <div className="mb-6">
-                <div className="text-4xl mb-3">{step === 1 ? '🚍' : '📧'}</div>
+                <div className="text-4xl mb-3">{step === 1 ? <Bus className="w-9 h-9 text-emerald-400" /> : <MailCheck className="w-9 h-9 text-emerald-400" />}</div>
                 <h2 className="text-2xl font-black text-white">
                   {step === 1 ? 'Driver Registration' : 'Email OTP Verification'}
                 </h2>
@@ -273,6 +245,15 @@ export default function DriverRegister() {
                     />
                   </div>
 
+                  <div>
+                    <label className="block text-xs font-semibold text-zinc-400 mb-1.5 flex items-center gap-1.5">
+                      <Phone className="w-3.5 h-3.5 text-emerald-400" /> Mobile Number
+                    </label>
+                    <input type="tel" required autoComplete="tel" placeholder="e.g. +91 9876543210"
+                      className="w-full bg-zinc-950 border border-zinc-800 focus:border-emerald-500 outline-none rounded-xl px-4 py-3 text-xs text-white placeholder-zinc-600 transition-colors"
+                      value={mobile} onChange={(e) => setMobile(e.target.value)} />
+                  </div>
+
                   {/* Email */}
                   <div>
                     <label className="block text-xs font-semibold text-zinc-400 mb-1.5 flex items-center gap-1.5">
@@ -281,11 +262,20 @@ export default function DriverRegister() {
                     <input
                       type="email"
                       required
-                      placeholder="e.g. rahul@example.com"
+                      placeholder="e.g. rahul@gmail.com"
                       className="w-full bg-zinc-950 border border-zinc-800 focus:border-emerald-500 outline-none rounded-xl px-4 py-3 text-xs text-white placeholder-zinc-600 transition-colors"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                     />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-zinc-400 mb-1.5 flex items-center gap-1.5">
+                      <CreditCard className="w-3.5 h-3.5 text-emerald-400" /> Driver License Number
+                    </label>
+                    <input type="text" required autoComplete="off" placeholder="Enter your license number"
+                      className="w-full bg-zinc-950 border border-zinc-800 focus:border-emerald-500 outline-none rounded-xl px-4 py-3 text-xs text-white placeholder-zinc-600 transition-colors"
+                      value={licenseNumber} onChange={(e) => setLicenseNumber(e.target.value)} />
                   </div>
 
                   {/* Route and Bus Number Row */}
@@ -297,7 +287,7 @@ export default function DriverRegister() {
                       <input
                         type="text"
                         required
-                        placeholder="e.g. College → Bus Stand"
+                        placeholder="e.g. College to Bus Stand"
                         className="w-full bg-zinc-950 border border-zinc-800 focus:border-emerald-500 outline-none rounded-xl px-4 py-3 text-xs text-white placeholder-zinc-600 transition-colors"
                         value={route}
                         onChange={(e) => setRoute(e.target.value)}
@@ -328,7 +318,7 @@ export default function DriverRegister() {
                       <input
                         type="password"
                         required
-                        placeholder="••••••••"
+                        placeholder="Enter password"
                         className="w-full bg-zinc-950 border border-zinc-800 focus:border-emerald-500 outline-none rounded-xl px-4 py-3 text-xs text-white placeholder-zinc-600 transition-colors"
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
@@ -342,7 +332,7 @@ export default function DriverRegister() {
                       <input
                         type="password"
                         required
-                        placeholder="••••••••"
+                        placeholder="Enter password"
                         className="w-full bg-zinc-950 border border-zinc-800 focus:border-emerald-500 outline-none rounded-xl px-4 py-3 text-xs text-white placeholder-zinc-600 transition-colors"
                         value={confirmPassword}
                         onChange={(e) => setConfirmPassword(e.target.value)}
@@ -356,76 +346,60 @@ export default function DriverRegister() {
                     className="w-full py-3.5 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-zinc-950 font-bold rounded-xl text-xs transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer mt-6"
                   >
                     {sendingOtp ? <Loader2 className="w-4 h-4 animate-spin" /> : <MailCheck className="w-4 h-4" />}
-                    <span>Send Verification Code</span>
+                    <span>Send 6-Digit OTP</span>
                   </button>
                 </form>
               )}
 
-              {/* STEP 2: Email OTP Verification */}
+              {/* STEP 2: Verify OTP and submit driver application */}
               {step === 2 && (
                 <form onSubmit={handleVerifyOtpAndRegister} className="space-y-6">
-                  <div>
-                    <label className="block text-xs font-semibold text-zinc-400 mb-3 text-center flex items-center justify-center gap-1.5">
-                      <KeyRound className="w-3.5 h-3.5 text-emerald-400" /> Enter 6-Digit OTP Code
-                    </label>
-
-                    <div className="flex justify-between gap-2" onPaste={handlePaste}>
-                      {otpDigits.map((digit, idx) => (
-                        <input
-                          key={idx}
-                          ref={digitInputRefs[idx]}
-                          type="text"
-                          maxLength={idx === 0 ? 6 : 1}
-                          inputMode="numeric"
-                          autoComplete={idx === 0 ? 'one-time-code' : 'off'}
-                          value={digit}
-                          onChange={(e) => handleDigitChange(idx, e.target.value)}
-                          onKeyDown={(e) => handleKeyDown(idx, e)}
-                          className="w-11 h-13 sm:w-12 sm:h-14 bg-zinc-950 border border-zinc-800 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none rounded-xl text-center text-xl font-bold font-mono text-white transition-all"
-                        />
-                      ))}
+                  {!otpVerified ? (
+                    <div>
+                      <label className="block text-xs font-semibold text-zinc-400 mb-3 text-center flex items-center justify-center gap-1.5">
+                        <MailCheck className="w-3.5 h-3.5 text-emerald-400" /> Enter the 6-digit code sent to Gmail
+                      </label>
+                      <div className="flex justify-between gap-2" onPaste={handlePaste}>
+                        {otpDigits.map((digit, idx) => (
+                          <input key={idx} ref={digitInputRefs[idx]} type="text" maxLength={idx === 0 ? 6 : 1}
+                            pattern="[0-9]*" inputMode="numeric" autoComplete={idx === 0 ? 'one-time-code' : 'off'}
+                            value={digit} onChange={(event) => handleDigitChange(idx, event.target.value)}
+                            onKeyDown={(event) => handleKeyDown(idx, event)}
+                            className="w-11 h-13 sm:w-12 sm:h-14 bg-zinc-950 border border-zinc-800 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none rounded-xl text-center text-xl font-bold font-mono text-white transition-all" />
+                        ))}
+                      </div>
                     </div>
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={loading || otpDigits.join('').length !== 6}
-                    className={`w-full py-3.5 rounded-xl text-xs font-bold transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer ${
-                      otpDigits.join('').length === 6
-                        ? 'bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-zinc-950'
-                        : 'bg-zinc-800 text-zinc-500 cursor-not-allowed'
-                    }`}
-                  >
+                  ) : (
+                    <>
+                      <div className="rounded-xl border border-emerald-900/70 bg-emerald-950/30 p-3 text-xs text-emerald-300">
+                        <CheckCircle2 className="inline w-4 h-4 mr-2" /> Email verified. Submit the driver application for admin review.
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <input type="password" required autoComplete="new-password" placeholder="Enter password" value={password}
+                          onChange={(event) => setPassword(event.target.value)}
+                          className="w-full bg-zinc-950 border border-zinc-800 focus:border-emerald-500 outline-none rounded-xl px-4 py-3 text-xs text-white placeholder-zinc-500" />
+                        <input type="password" required autoComplete="new-password" placeholder="Confirm password" value={confirmPassword}
+                          onChange={(event) => setConfirmPassword(event.target.value)}
+                          className="w-full bg-zinc-950 border border-zinc-800 focus:border-emerald-500 outline-none rounded-xl px-4 py-3 text-xs text-white placeholder-zinc-500" />
+                      </div>
+                    </>
+                  )}
+                  <button type="submit" disabled={loading || (!otpVerified && otpDigits.join('').length !== 6)}
+                    className="w-full py-3.5 rounded-xl text-xs font-bold bg-gradient-to-r from-emerald-500 to-teal-500 text-zinc-950 flex items-center justify-center gap-2 disabled:opacity-50">
                     {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-                    <span>Verify Code & Submit Registration</span>
+                    {otpVerified ? 'Submit Driver Registration' : 'Verify OTP & Submit Registration'}
                   </button>
-
-                  <div className="flex items-center justify-between pt-2 text-xs border-t border-zinc-800/80">
-                    <button
-                      type="button"
-                      onClick={handleSendOtp}
-                      disabled={!canResend || sendingOtp}
-                      className={`flex items-center gap-1.5 transition-colors ${
-                        canResend && !sendingOtp
-                          ? 'text-emerald-400 hover:text-emerald-300 font-semibold cursor-pointer'
-                          : 'text-zinc-600 cursor-not-allowed'
-                      }`}
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 ${sendingOtp ? 'animate-spin' : ''}`} />
-                      <span>{canResend ? 'Resend OTP Code' : `Resend in 00:${resendTimer.toString().padStart(2, '0')}`}</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setStep(1)}
-                      className="text-zinc-400 hover:text-white underline cursor-pointer"
-                    >
-                      Edit Details
-                    </button>
-                  </div>
+                  {!otpVerified && (
+                    <div className="flex justify-between pt-2 text-xs border-t border-zinc-800/80">
+                      <button type="button" onClick={handleSendOtp} disabled={!canResend || sendingOtp}
+                        className={`flex items-center gap-1.5 ${canResend && !sendingOtp ? 'text-emerald-400 hover:text-emerald-300 font-semibold' : 'text-zinc-600 cursor-not-allowed'}`}>
+                        {sendingOtp ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                        {canResend ? 'Resend code' : `Resend in 00:${resendTimer.toString().padStart(2, '0')}`}
+                      </button>
+                    </div>
+                  )}
                 </form>
               )}
-
               <div className="mt-6 pt-4 border-t border-zinc-800/80 text-center text-xs text-zinc-400">
                 Already registered?{' '}
                 <Link to="/driver-login" className="text-emerald-400 hover:underline font-bold">
